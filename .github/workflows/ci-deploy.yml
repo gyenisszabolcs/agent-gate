@@ -1,0 +1,55 @@
+name: CI és deploy
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet restore
+      - run: dotnet build --configuration Release --no-restore
+      - run: dotnet test --configuration Release --no-build
+      - if: github.event_name == 'push'
+        run: dotnet publish src/AgentGate/AgentGate.csproj --configuration Release --no-build --output publish
+      - if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentgate
+          path: publish
+          retention-days: 7
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: [self-hosted, agentgate]
+    concurrency: deploy
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: agentgate
+          path: release
+      - name: Telepítés
+        run: |
+          set -euo pipefail
+          DEST=/opt/agentgate/releases/${GITHUB_SHA}
+          rm -rf "$DEST"
+          cp -r release "$DEST"
+          chmod -R g+rX "$DEST"
+          ln -sfn "$DEST" /opt/agentgate/current
+          sudo /usr/bin/systemctl restart agentgate
+          sleep 5
+          sudo /usr/bin/systemctl is-active agentgate
+          curl -fsS http://127.0.0.1:8090/health
+      - name: Régi kiadások törlése
+        run: ls -1dt /opt/agentgate/releases/* | tail -n +6 | xargs -r rm -rf
