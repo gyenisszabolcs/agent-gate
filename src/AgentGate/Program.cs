@@ -22,6 +22,8 @@ builder.Services.PostConfigure<LoggerFilterOptions>(options =>
 builder.Services.Configure<AuditOptions>(builder.Configuration.GetSection("Audit"));
 builder.Services.AddSingleton<IAuditStore>(services => new SqliteAuditStore(
     services.GetRequiredService<IOptions<AuditOptions>>().Value.DatabasePath));
+builder.Services.Configure<KillSwitchFileOptions>(builder.Configuration.GetSection("KillSwitch"));
+builder.Services.AddSingleton<IKillSwitchStateSource, FileKillSwitchStateSource>();
 builder.Services.AddSingleton<McpAuditFilter>();
 builder.Services.AddMcpServer()
     .WithHttpTransport(options => options.Stateless = true)
