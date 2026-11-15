@@ -1,6 +1,6 @@
 # Aszinkron jóváhagyási kapu és egyszer használható tároló
 
-A `Program` a közös MCP-auditkapu mellett singleton `ApprovalGate` háttérszolgáltatást és az alábbi egyszer használható tárolót regisztrálja. A-ban nincs éles csatorna, automatikus jóváhagyó vagy külső kapcsolat; ilyen regisztráció nélkül minden jóváhagyásköteles kérés elutasított. A Home Assistant csatorna külön feladat (#30).
+A `Program` a közös MCP-auditkapu mellett singleton `ApprovalGate` háttérszolgáltatást és az alábbi egyszer használható tárolót regisztrálja. A-ban nincs éles csatorna vagy automatikus jóváhagyó; csatornaregisztráció nélkül minden jóváhagyásköteles kérés elutasított. A #30 [opcionális Home Assistant csatornája](HomeAssistant/README.md) erre a kapura épül.
 
 ## Alkalmazásszintű folyamat
 
@@ -28,7 +28,11 @@ A `Program` a közös MCP-auditkapu mellett singleton `ApprovalGate` háttérszo
 
 Csatorna hiányában nincs HA-/Bitwarden-hívás. A küldési várakozás korlátos és megszakítható; egyszerre legfeljebb egy nyilvántartott kérés- vagy eredményküldés folyik. A ténylegesen be nem fejeződött munka timeout után is foglalja a helyét, ezért új munkák nem halmozhatók rá. Leállításkor a gate megszakítja és a host határidejéig megvárja. .NET cancellation nem tud kényszerrel leállítani együtt nem működő külső implementációt: legfeljebb ez az egy nyilvántartott feladat maradhat késői befejezésre; késői hibája sem kerül naplóba. Az eredményküldés hibája nem módosítja a már meghozott döntést és nem indít műveletismétlést. Foglalt/offline csatornánál nem állítunk sikeres kézbesítést.
 
-A döntésolvasó hibáját a gate nem naplózza nyersen; új kéréseket zártan elutasít, a már függő kérések lejárata tovább működik. Lejáratkor a 100 ms-os háttérfigyelő auditál és eredményjelzést kísérel meg. A státuszok memóriabeli története jelenleg a gate folyamatának élettartamáig megmarad; tömeges használat előtt külön kapacitás-/megőrzéspolitika szükséges.
+A végállapotoknak külön, legfeljebb 1024 elemű átadási sora és egyetlen felügyelt küldőhurka van. A foglalt küldési hely nem dobja el az eredményt: a végállapot első küldési kísérlete megvárja a hely felszabadulását, és megelőzi az új kérdésküldést. Ez nem sikertelen kézbesítés újrapróbálása; az elkezdett eredményküldést nem ismételjük. A sikeres push utáni Pending-audithiba is lezáró Failed-jelzést ad a csatornának, végrehajtási jog nélkül. Ha a szinkron lezárási jelzés nem fér a sorba, új kéréseket zártan tiltunk; a HA-csatorna 1024-es értesítési korlátja mellett a sor nem nőhet korlátlanul.
+
+A külső küldési timeout vagy kliensmegszakítás után eltávolított kéréshez is egyszeri lezárás tartozik, ha a csatornahívás ténylegesen elindult. A késői küldési siker nem hagyhat árva értesítést: a felügyelt munka befejezése után az eredményhurok visszavonja, végrehajtási engedély nélkül. A még el sem indult, foglalt hely miatt elutasított küldés nem termel üres lezárásokat.
+
+A döntésolvasó hibáját a gate nem naplózza nyersen; új kéréseket zártan elutasít, a már függő kérések lejárata tovább működik. Lejáratkor a 100 ms-os háttérfigyelő auditál és eredményjelzést sorba állít. Leállításkor a még el nem kezdett értesítés elveszhet; nem állítunk kézbesítést. A státuszok memóriabeli története jelenleg a gate folyamatának élettartamáig megmarad; tömeges használat előtt külön kapacitás-/megőrzéspolitika szükséges.
 
 A függő kérések, eredmények és engedélyek csak memóriában élnek. Gate-újraindítás után MIND érvénytelenek, az audit megmaradása nem éleszti fel őket. Egyetlen gate-példányra vonatkozó garancia, nem többpéldányos elosztott végrehajtás.
 

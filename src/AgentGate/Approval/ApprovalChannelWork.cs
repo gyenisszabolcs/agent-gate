@@ -8,30 +8,52 @@ internal sealed class ApprovalChannelWork(TimeProvider clock, TimeSpan timeout) 
     private Task<bool>? active;
     private bool stopped;
     private bool disposed;
+    private int waitingForSlot;
 
-    public async Task<bool> SendAsync(Func<CancellationToken, Task> send, CancellationToken cancellationToken)
+    public async Task<bool> SendAsync(Func<CancellationToken, Task> send, CancellationToken cancellationToken, bool waitForSlot = false)
     {
         Task<bool> work;
-        lock (sync)
+        var waiting = false;
+        try
         {
-            if (stopped || active is { IsCompleted: false })
-                return false;
-            var cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, stopping.Token);
-            cancellation.CancelAfter(timeout);
-            var token = cancellation.Token;
-            active = work = Task.Run(async () =>
+            while (true)
             {
-                try
+                Task<bool>? occupied;
+                lock (sync)
                 {
-                    await send(token);
-                    return !token.IsCancellationRequested;
+                    if (stopped || cancellationToken.IsCancellationRequested) return false;
+                    if (waitForSlot && !waiting) { waitingForSlot++; waiting = true; }
+                    if (active is { IsCompleted: false })
+                    {
+                        if (!waitForSlot) return false;
+                        occupied = active;
+                    }
+                    else
+                    {
+                        if (!waitForSlot && waitingForSlot != 0) return false;
+                        var cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, stopping.Token);
+                        cancellation.CancelAfter(timeout);
+                        var token = cancellation.Token;
+                        active = work = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await send(token);
+                                return !token.IsCancellationRequested;
+                            }
+                            catch (Exception) { return false; }
+                            finally { cancellation.Dispose(); }
+                        }, CancellationToken.None);
+                        break;
+                    }
                 }
-                catch (Exception)
-                {
-                    return false;
-                }
-                finally { cancellation.Dispose(); }
-            }, CancellationToken.None);
+                try { await occupied.WaitAsync(cancellationToken); }
+                catch (Exception) { return false; }
+            }
+        }
+        finally
+        {
+            if (waiting) lock (sync) waitingForSlot--;
         }
         try { return await work.WaitAsync(timeout, clock, cancellationToken); }
         catch (Exception) { return false; }
