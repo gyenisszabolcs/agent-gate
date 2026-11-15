@@ -17,6 +17,156 @@ namespace AgentGate.Tests;
 
 public sealed class ApprovalGateTests
 {
+    [Fact]
+    public async Task OriginalSqliteBeginFailureCannotSendRequestOrExecute()
+    {
+        var channel = new FakeChannel();
+        var handler = new ProbeHandler();
+        await using var app = CreateApp(services =>
+        {
+            services.AddSingleton<IApprovalChannel>(channel);
+            services.RemoveAll<IApprovalOperationHandler>();
+            services.AddSingleton<IApprovalOperationHandler>(handler);
+        });
+        using var client = app.CreateClient();
+        await new SqliteAuditStore(app.AuditPath).ReadAllAsync(CancellationToken.None);
+        await using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={app.AuditPath};Pooling=False");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "CREATE TRIGGER fail_begin BEFORE INSERT ON AuditCalls BEGIN SELECT RAISE(ABORT, 'Tesztelt előzetes audithiba.'); END;";
+        await command.ExecuteNonQueryAsync();
+        using var reply = await CallAsync(app, "gate_approval_test", new { text = "próba" });
+        Assert.True(reply.RootElement.GetProperty("result").GetProperty("isError").GetBoolean());
+        Assert.Empty(channel.Requests);
+        Assert.Equal(0, handler.Count);
+        command.CommandText = "SELECT COUNT(*) FROM AuditCalls";
+        Assert.Equal(0L, await command.ExecuteScalarAsync());
+    }
+
+    [Theory]
+    [InlineData("request_sent", false, "Failed", 0)]
+    [InlineData("request_sent", true, "Failed", 0)]
+    [InlineData("Pending", true, "Started", 0)]
+    [InlineData("decision", false, "Failed", 0)]
+    [InlineData("decision", true, "Failed", 0)]
+    [InlineData("execution", false, "Failed", 0)]
+    [InlineData("execution", true, "Failed", 1)]
+    [InlineData("outcome", true, "Failed", 1)]
+    [InlineData("outcome", false, "Failed", 1)]
+    [InlineData("expired", false, "Failed", 0)]
+    [InlineData("expired", true, "Failed", 0)]
+    [InlineData("terminal", true, "Pending", 1)]
+    public async Task AuditFailureMatrixPreservesOriginalRowAndNeverRetriesEffect(string phase, bool update, string originalState, int executions)
+    {
+        var channel = new FakeChannel();
+        var handler = new ProbeHandler();
+        var secret = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
+        var clock = new MutableClock();
+        var logs = new CaptureLogs();
+        await using var app = CreateApp(services =>
+        {
+            services.AddSingleton<IApprovalChannel>(channel);
+            services.RemoveAll<IApprovalOperationHandler>();
+            services.AddSingleton<IApprovalOperationHandler>(handler);
+            services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(logs));
+            services.AddSingleton<TimeProvider>(clock);
+        });
+        using var client = app.CreateClient();
+        await new SqliteAuditStore(app.AuditPath).ReadAllAsync(CancellationToken.None);
+        await using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={app.AuditPath};Pooling=False");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        var predicate = phase switch
+        {
+            "Pending" => "NEW.State = 'Pending'",
+            "terminal" => "OLD.State = 'Pending'",
+            _ => $"NEW.SanitizedParameters LIKE '%{phase}%'"
+        };
+        command.CommandText = $"CREATE TRIGGER fail_audit BEFORE {(update ? "UPDATE" : "INSERT")} ON AuditCalls WHEN {predicate} BEGIN SELECT RAISE(ABORT, '{secret}'); END;";
+        await command.ExecuteNonQueryAsync();
+        using var reply = await CallAsync(app, "gate_approval_test", new { text = "próba" });
+        var notice = Assert.Single(channel.Requests);
+        if (phase == "expired") clock.Now = notice.ExpiresAt;
+        else if (phase is not ("request_sent" or "Pending"))
+            await channel.Decisions.Writer.WriteAsync(new ApprovalDecision(notice.Id, ApprovalChoice.Approve, "admin", clock.Now));
+        var outcome = await channel.Finished.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.Equal(ApprovalState.Failed, outcome.State);
+        Assert.Equal(executions, handler.Count);
+        command.CommandText = "SELECT State FROM AuditCalls WHERE CallId = $id";
+        command.Parameters.AddWithValue("$id", notice.Id.ToString());
+        Assert.Equal(originalState, await command.ExecuteScalarAsync());
+        command.CommandText = "SELECT SanitizedParameters, SanitizedError FROM AuditCalls";
+        var failedRecorded = false;
+        await using (var reader = await command.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                var parameters = reader.GetString(0);
+                Assert.True(!parameters.Contains(secret, StringComparison.Ordinal) && (reader.IsDBNull(1) || !reader.GetString(1).Contains(secret, StringComparison.Ordinal)), "Titok a tartós auditban.");
+                using var document = JsonDocument.Parse(parameters);
+                failedRecorded |= document.RootElement.TryGetProperty("event", out var value) && value.GetString() == "failed";
+            }
+        }
+        Assert.True(failedRecorded, "Hiányzik a tényleges audithiba korrelált lifecycle eseménye.");
+        Assert.True(!logs.Contains(secret) && !reply.RootElement.GetRawText().Contains(secret, StringComparison.Ordinal) && !JsonSerializer.Serialize(outcome).Contains(secret, StringComparison.Ordinal), "Titok a hibajelzésben.");
+    }
+
+    [Theory]
+    [InlineData("Rejected", "rejected", false)]
+    [InlineData("Expired", "expired", false)]
+    [InlineData("Failed", "failed", true)]
+    [InlineData("Succeeded", "executed", false)]
+    public async Task OriginalPendingCallClosesWithCorrelatedActualLifecycle(string terminal, string expectedEvent, bool failExecution)
+    {
+        var channel = new FakeChannel();
+        var clock = new MutableClock();
+        var handler = new ProbeHandler { Error = failExecution ? "Tesztelt végrehajtási hiba." : null };
+        await using var app = CreateApp(services =>
+        {
+            services.AddSingleton<IApprovalChannel>(channel);
+            services.AddSingleton<TimeProvider>(clock);
+            services.RemoveAll<IApprovalOperationHandler>();
+            services.AddSingleton<IApprovalOperationHandler>(handler);
+        });
+        using var reply = await CallAsync(app, "gate_approval_test", new { text = "próba" });
+        var notice = Assert.Single(channel.Requests);
+        if (terminal == "Expired") clock.Now = notice.ExpiresAt;
+        else await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => channel.Decisions.Writer.WriteAsync(
+            new ApprovalDecision(notice.Id, terminal == "Rejected" ? ApprovalChoice.Reject : ApprovalChoice.Approve, "admin", clock.Now)).AsTask()));
+        await channel.Finished.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={app.AuditPath};Pooling=False");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT State, Caller, Tool, SanitizedParameters FROM AuditCalls WHERE CallId = $id";
+        command.Parameters.AddWithValue("$id", notice.Id.ToString());
+        await using (var reader = await command.ExecuteReaderAsync())
+        {
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal(terminal, reader.GetString(0));
+            Assert.Equal(notice.Caller, reader.GetString(1));
+            Assert.Equal(notice.Tool, reader.GetString(2));
+            using var parameters = JsonDocument.Parse(reader.GetString(3));
+            Assert.Equal("próba", parameters.RootElement.GetProperty("text").GetString());
+            Assert.False(await reader.ReadAsync());
+        }
+        command.CommandText = "SELECT Tool, SanitizedParameters FROM AuditCalls WHERE Tool = 'approval_lifecycle' OR SanitizedParameters LIKE '%execution%' ORDER BY rowid";
+        var events = new List<string>();
+        await using (var reader = await command.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                using var parameters = JsonDocument.Parse(reader.GetString(1));
+                Assert.Equal(notice.Id, parameters.RootElement.GetProperty("requestId").GetGuid());
+                if (reader.GetString(0) == "approval_lifecycle") events.Add(parameters.RootElement.GetProperty("event").GetString()!);
+            }
+        }
+        Assert.Equal(1, events.Count(value => value == "request_sent"));
+        Assert.Equal(1, events.Count(value => value == expectedEvent));
+        Assert.Equal(terminal is "Failed" or "Succeeded", events.Contains("approved"));
+        Assert.Equal(terminal is "Failed" or "Succeeded" ? ["request_sent", "approved", expectedEvent] : new[] { "request_sent", expectedEvent }, events);
+        Assert.Equal(terminal is "Failed" or "Succeeded" ? 1 : 0, handler.Count);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -390,6 +540,12 @@ public sealed class ApprovalGateTests
         while (handler.Count < 2 && !limit.IsCompleted) await Task.Delay(10);
         Assert.Equal(2, handler.Count);
         Assert.Equal(ApprovalState.Executed, app.Services.GetRequiredService<ApprovalGate>().GetStatus(channel.Requests[0].Id)!.State);
+        await using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={app.AuditPath};Pooling=False");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT State FROM AuditCalls WHERE CallId = $id";
+        command.Parameters.AddWithValue("$id", channel.Requests[0].Id.ToString());
+        Assert.Equal("Succeeded", await command.ExecuteScalarAsync());
     }
 
     [Fact]
@@ -685,6 +841,7 @@ public sealed class ApprovalGateTests
 
     private sealed class BarrierStore : IAuditStore
     {
+        public Task CompletePendingAsync(Guid callId, string state, string? sanitizedError, CancellationToken cancellationToken) => Task.CompletedTask;
         public bool Fail { get; set; }
         public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -702,6 +859,7 @@ public sealed class ApprovalGateTests
 
     private sealed class AdvancingStore : IAuditStore
     {
+        public Task CompletePendingAsync(Guid callId, string state, string? sanitizedError, CancellationToken cancellationToken) => Task.CompletedTask;
         public Action? Advance { get; set; }
         public bool ExpiredRecorded { get; private set; }
         public Task BeginAsync(AuditCall call, CancellationToken cancellationToken)

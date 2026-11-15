@@ -23,8 +23,28 @@ using Xunit;
 
 namespace AgentGate.Tests;
 
-public sealed class HomeAssistantApprovalChannelTests
+public sealed partial class HomeAssistantApprovalChannelTests
 {
+    [Theory]
+    [InlineData(RiskLevel.SensitiveControl, "érzékeny vezérlés")]
+    [InlineData(RiskLevel.Configuration, "konfiguráció")]
+    [InlineData(RiskLevel.System, "rendszer")]
+    public async Task RequestPresentationUsesHungarianRiskBudapestTimeAndParameterLines(RiskLevel risk, string label)
+    {
+        var clock = new MutableClock { Now = new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero) };
+        await using var harness = new Standalone(clock: clock);
+        await harness.StartAsync();
+        var notice = Notice() with { Risk = risk, Summary = "{\"text\":\"próba\",\"count\":\"2\"}", ExpiresAt = clock.Now.AddMinutes(15) };
+        await harness.Channel.SendRequestAsync(notice, CancellationToken.None);
+        using var body = JsonDocument.Parse(harness.Http.Body!);
+        var message = body.RootElement.GetProperty("message").GetString()!;
+        Assert.Contains("Kockázat: " + label + "\n", message);
+        Assert.Contains("Lejárat (Europe/Budapest): 13:15", message);
+        Assert.Contains("text: próba\ncount: 2\n", message);
+        Assert.DoesNotContain("{", message);
+        Assert.Equal(clock.Now.AddMinutes(15), notice.ExpiresAt);
+    }
+
     [Theory]
     [InlineData(5)]
     [InlineData(60)]
@@ -917,7 +937,7 @@ public sealed class HomeAssistantApprovalChannelTests
         Assert.True(!approve.Contains(notice.Id.ToString("N"), StringComparison.Ordinal) && !reject.Contains(notice.Id.ToString("N"), StringComparison.Ordinal), "A kód kérésazonosítóból származik.");
         var message = payload.RootElement.GetProperty("message").GetString()!;
         Assert.True(!message.Contains(app.Secrets.Token, StringComparison.Ordinal) && !message.Contains(approve, StringComparison.Ordinal) && !message.Contains(reject, StringComparison.Ordinal), "Token vagy akciókód az emberi szövegben.");
-        Assert.True(message.Contains("Mikaela", StringComparison.Ordinal) && message.Contains("gate_approval_test", StringComparison.Ordinal) && message.Contains("SensitiveControl", StringComparison.Ordinal), "Hiányos összefoglaló.");
+        Assert.True(message.Contains("Mikaela", StringComparison.Ordinal) && message.Contains("gate_approval_test", StringComparison.Ordinal) && message.Contains("Kockázat: érzékeny vezérlés", StringComparison.Ordinal), "Hiányos összefoglaló.");
     }
 
     [Fact]
@@ -953,7 +973,7 @@ public sealed class HomeAssistantApprovalChannelTests
         public FakeSecrets Secrets { get; } = new();
         public HomeAssistantApprovalChannel Channel { get; }
         public FakeSocketFactory Factory { get; }
-        public Standalone(string? expectedDevice = null, Action<HomeAssistantApprovalOptions>? configure = null, TimeProvider? clock = null)
+        public Standalone(string? expectedDevice = null, Action<HomeAssistantApprovalOptions>? configure = null, TimeProvider? clock = null, ApprovalPushFormatter? formatter = null)
         {
             var options = new HomeAssistantApprovalOptions
             {
@@ -966,7 +986,7 @@ public sealed class HomeAssistantApprovalChannelTests
             configure?.Invoke(options);
             Factory = new FakeSocketFactory(Socket);
             Channel = new HomeAssistantApprovalChannel(Microsoft.Extensions.Options.Options.Create(options), Secrets,
-                Factory, Http, clock ?? TimeProvider.System);
+                Factory, Http, clock ?? TimeProvider.System, formatter);
         }
         public async Task StartAsync()
         {
@@ -1004,6 +1024,7 @@ public sealed class HomeAssistantApprovalChannelTests
             Operation.Result = "token=" + Secrets.Token;
         }
         public IAuditStore? AuditOverride { get; set; }
+        public ApprovalPushFormatter? FormatterOverride { get; set; }
         public int GateSendTimeoutSeconds { get; set; } = 5;
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -1031,6 +1052,7 @@ public sealed class HomeAssistantApprovalChannelTests
                 services.RemoveAll<IApprovalOperationHandler>();
                 services.AddSingleton<IApprovalOperationHandler>(Operation);
                 if (AuditOverride is not null) services.AddSingleton<IAuditStore>(AuditOverride);
+                if (FormatterOverride is not null) services.AddSingleton(FormatterOverride);
                 services.AddSingleton<ISecretProvider>(Secrets);
                 services.AddSingleton<TimeProvider>(Clock);
                 services.AddSingleton<IApprovalWebSocketFactory>(Factory);
@@ -1046,6 +1068,7 @@ public sealed class HomeAssistantApprovalChannelTests
 
     private sealed class FailPendingStore(string canary) : IAuditStore
     {
+        public Task CompletePendingAsync(Guid callId, string state, string? sanitizedError, CancellationToken cancellationToken) => Task.CompletedTask;
         public Guid RequestId { get; private set; }
         public Task BeginAsync(AuditCall call, CancellationToken cancellationToken)
         {
@@ -1129,7 +1152,12 @@ public sealed class HomeAssistantApprovalChannelTests
         public string Result { get; set; } = "végrehajtva";
         public bool Fail { get; set; }
         public int Count;
-        public PreparedOperation Prepare(IReadOnlyDictionary<string, JsonElement> arguments) => new ApprovalTestOperation().Prepare(arguments);
+        public Dictionary<string, string?> ExtraParameters { get; } = [];
+        public PreparedOperation Prepare(IReadOnlyDictionary<string, JsonElement> arguments)
+        {
+            var operation = new ApprovalTestOperation().Prepare(arguments);
+            return new PreparedOperation(Tool, Risk, operation.Parameters.Concat(ExtraParameters).ToDictionary(pair => pair.Key, pair => pair.Value));
+        }
         public Task<string> ExecuteAsync(PreparedOperation operation, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();

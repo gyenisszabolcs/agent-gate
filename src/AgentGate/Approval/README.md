@@ -17,6 +17,8 @@ A `Program` a közös MCP-auditkapu mellett singleton `ApprovalGate` háttérszo
 
 ## Eszközök és egyhívós bizalmi határ
 
+Működő audit mellett az eredeti `Pending` hívássor is lezárul: elutasítás → `Rejected`, lejárat → `Expired`, hiba → `Failed`, sikeres végrehajtás → `Succeeded`. A lifecycle üzleti sikeres végállapota `executed` (`Executed` kapuállapot), nem puszta jóváhagyás. Minden lifecycle- és execution-audit teljes `requestId`-val az eredeti CallId-ra mutat; a push rövid azonosítója csak megjelenítés. A [tárolószerződés és audithiba-korlátok](../Audit/README.md) szerint a lezárás feltételes, a régi Started-védelem megmarad. Az előzetes Pending-audit megerősítésének sorrendje változatlan; az új küldési lifecycle-audit hibája sem enged végrehajtást. Az eredményküldési hiba nem írja át a már tartós végállapotot.
+
 - `gate_approval_test`: `SensitiveControl`, kötelező `text` string. NFC-normalizált, szélein vágott 1–160 karakter, belső vezérlőkarakter nélkül; ismeretlen paraméter elutasított. Nincs éles hatása: csak a végrehajtás tényét adja vissza. A szűrt összefoglaló kizárólag a `text` auditparaméterből készül.
 - `gate_approval_status`: `Read`, `requestId` szabványos D-formátumú GUID. Várakozik, jóváhagyva és végrehajtva, elutasítva, lejárt vagy sikertelen állapot és legfeljebb a szűrt eredmény. Az azonosító ismerete nem jogosultság.
 - A telepítés jóváhagyott feltétele: kizárólag Mikaela fér hozzá a gate-hez. Az `Audit:Caller` szerveroldali hívónevet üzemeltetéskor Mikaelára kell állítani; a kérés tulajdonosa ennek létrehozáskori pontos értéke. A status csak az aktuális konfigurált név egyezésekor ad adatot. Kliens `caller`/`agent` paraméter nem írhatja felül; idegen és ismeretlen kérés azonos választ kap.

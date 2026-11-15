@@ -35,7 +35,7 @@ public sealed class ApprovalGate(
         base.Dispose();
     }
 
-    public void ConfirmRequest(Guid id, bool committed)
+    public async Task ConfirmRequestAsync(Guid id, bool committed)
     {
         if (!requests.TryGetValue(id, out var pending))
             return;
@@ -51,8 +51,13 @@ public sealed class ApprovalGate(
             }
             pending.Ready.TrySetResult(committed);
         }
-        if (failed is not null && channel is not null && !outcomes.Writer.TryWrite(failed))
-            readerHealthy = false;
+        if (failed is not null)
+        {
+            using var completion = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await RecordLifecycleAsync(pending, "failed", null, completion.Token);
+            if (channel is not null && !outcomes.Writer.TryWrite(failed))
+                readerHealthy = false;
+        }
     }
 
     public ApprovalOutcome? GetStatus(Guid id)
@@ -85,6 +90,7 @@ public sealed class ApprovalGate(
                         pending.State = ApprovalState.Expired;
                     }
                     await RecordLifecycleAsync(pending, "expired", null, stoppingToken);
+                    await CompleteOriginalAsync(pending);
                     if (channel is not null)
                         await NotifyAsync(new ApprovalOutcome(id, pending.State, pending.Result), stoppingToken);
                 }
@@ -116,11 +122,13 @@ public sealed class ApprovalGate(
                     lock (pending.Sync)
                         pending.State = ApprovalState.Expired;
                     await RecordLifecycleAsync(pending, "expired", null, stoppingToken);
+                    await CompleteOriginalAsync(pending);
                     await NotifyAsync(new ApprovalOutcome(decision.Id, pending.State, pending.Result), stoppingToken);
                     continue;
                 }
                 if (!await RecordLifecycleAsync(pending, "decision", decision, stoppingToken))
                 {
+                    await CompleteOriginalAsync(pending);
                     await NotifyAsync(new ApprovalOutcome(decision.Id, pending.State, pending.Result), stoppingToken);
                     continue;
                 }
@@ -128,7 +136,8 @@ public sealed class ApprovalGate(
                 {
                     lock (pending.Sync)
                         pending.State = ApprovalState.Rejected;
-                    await NotifyAsync(new ApprovalOutcome(decision.Id, ApprovalState.Rejected, null), stoppingToken);
+                    await CompleteOriginalAsync(pending);
+                    await NotifyAsync(new ApprovalOutcome(decision.Id, pending.State, pending.Result), stoppingToken);
                     continue;
                 }
                 using var scope = scopes.CreateScope();
@@ -151,6 +160,7 @@ public sealed class ApprovalGate(
                         completionAttempted = true;
                         await store.CompleteAsync(callId, "Failed", 0, "A jóváhagyási kérés lejárt.", stoppingToken);
                         await RecordLifecycleAsync(pending, "expired", null, stoppingToken);
+                        await CompleteOriginalAsync(pending);
                         await NotifyAsync(new ApprovalOutcome(decision.Id, pending.State, pending.Result), stoppingToken);
                         continue;
                     }
@@ -180,6 +190,7 @@ public sealed class ApprovalGate(
                     }
                 }
                 await RecordLifecycleAsync(pending, "outcome", null, stoppingToken);
+                await CompleteOriginalAsync(pending);
                 await NotifyAsync(new ApprovalOutcome(decision.Id, pending.State, pending.Result), stoppingToken);
             }
         }
@@ -222,6 +233,34 @@ public sealed class ApprovalGate(
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
     }
 
+    private async Task CompleteOriginalAsync(PendingOperation pending)
+    {
+        try
+        {
+            using var completion = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using var scope = scopes.CreateScope();
+            var state = pending.State switch
+            {
+                ApprovalState.Executed => "Succeeded",
+                ApprovalState.Rejected => "Rejected",
+                ApprovalState.Expired => "Expired",
+                _ => "Failed"
+            };
+            await scope.ServiceProvider.GetRequiredService<IAuditStore>().CompletePendingAsync(
+                pending.Notice.Id, state, state == "Failed" ? pending.Result : null, completion.Token);
+        }
+        catch (Exception)
+        {
+            lock (pending.Sync)
+            {
+                pending.State = ApprovalState.Failed;
+                pending.Result = "Az eredeti audit lezárása sikertelen; tartós végállapot nem igazolható. Ez nem visszagörgetés.";
+            }
+            using var failure = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await RecordLifecycleAsync(pending, "failed", null, failure.Token);
+        }
+    }
+
     private async Task<bool> RecordLifecycleAsync(PendingOperation pending, string phase, ApprovalDecision? decision, CancellationToken cancellationToken)
     {
         try
@@ -233,8 +272,14 @@ public sealed class ApprovalGate(
             {
                 requestId = pending.Notice.Id,
                 phase,
+                @event = phase switch
+                {
+                    "decision" => decision?.Choice == ApprovalChoice.Approve ? "approved" : "rejected",
+                    "outcome" => pending.State == ApprovalState.Executed ? "executed" : "failed",
+                    _ => phase
+                },
                 state = pending.State.ToString(),
-                result = phase == "outcome" ? pending.Result : null,
+                result = phase is "outcome" or "failed" ? pending.Result : null,
                 actor = SecretRedactor.RedactText(decision?.Actor),
                 channel = SecretRedactor.RedactText(channel?.Name),
                 decidedAt = decision?.DecidedAt,
@@ -251,6 +296,12 @@ public sealed class ApprovalGate(
             {
                 pending.State = ApprovalState.Failed;
                 pending.Result = "A jóváhagyási audit sikertelen.";
+            }
+            // Ez új hibaesemény, nem a meghiúsult írás vagy a művelet újrapróbálása.
+            if (phase != "failed")
+            {
+                using var failure = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await RecordLifecycleAsync(pending, "failed", null, failure.Token);
             }
             return false;
         }
@@ -293,12 +344,20 @@ public sealed class ApprovalGate(
                 finally { if (Volatile.Read(ref invalidated) != 0) RevokeNotice(); }
             }, cancellationToken))
                 throw new InvalidOperationException();
+            if (!await RecordLifecycleAsync(pending, "request_sent", null, cancellationToken))
+                throw new InvalidOperationException();
             return id;
         }
         catch (Exception)
         {
             requests.TryRemove(id, out _);
             pending.Ready.TrySetResult(false);
+            if (pending.State != ApprovalState.Failed)
+            {
+                pending.State = ApprovalState.Failed;
+                using var failure = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await RecordLifecycleAsync(pending, "failed", null, failure.Token);
+            }
             Volatile.Write(ref invalidated, 1);
             if (Volatile.Read(ref started) != 0) RevokeNotice();
             return null;

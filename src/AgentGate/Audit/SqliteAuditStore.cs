@@ -139,6 +139,25 @@ public sealed class SqliteAuditStore : IAuditStore
         }
     }
 
+    public async Task CompletePendingAsync(Guid callId, string state, string? sanitizedError, CancellationToken cancellationToken)
+    {
+        if (callId == Guid.Empty || state is not ("Succeeded" or "Failed" or "Rejected" or "Expired"))
+            throw new ArgumentException("Érvényes hívásazonosító és jóváhagyási végállapot szükséges.");
+        cancellationToken.ThrowIfCancellationRequested();
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE AuditCalls SET State = $state, SanitizedError = $error
+            WHERE CallId = $id AND State = 'Pending';
+            """;
+        command.Parameters.AddWithValue("$id", callId.ToString());
+        command.Parameters.AddWithValue("$state", state);
+        command.Parameters.AddWithValue("$error", (object?)sanitizedError ?? DBNull.Value);
+        if (await command.ExecuteNonQueryAsync(cancellationToken) != 1)
+            throw new InvalidOperationException("A függő auditbejegyzés nem véglegesíthető.");
+    }
+
     private static async Task InitializeAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();

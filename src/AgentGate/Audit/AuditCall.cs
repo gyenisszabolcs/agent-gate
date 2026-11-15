@@ -18,6 +18,7 @@ public interface IAuditStore
 {
     Task BeginAsync(AuditCall call, CancellationToken cancellationToken);
     Task CompleteAsync(Guid callId, string state, double durationMilliseconds, string? sanitizedError, CancellationToken cancellationToken);
+    Task CompletePendingAsync(Guid callId, string state, string? sanitizedError, CancellationToken cancellationToken);
 }
 
 public sealed class AuditOptions

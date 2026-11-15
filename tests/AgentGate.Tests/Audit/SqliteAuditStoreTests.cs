@@ -244,5 +244,71 @@ public sealed class SqliteAuditStoreTests : IDisposable
         await store.CompleteAsync(call.CallId, "Cancelled", 1, "megszakadt", CancellationToken.None);
     }
 
+    [Theory]
+    [InlineData("Rejected")]
+    [InlineData("Expired")]
+    [InlineData("Failed")]
+    [InlineData("Succeeded")]
+    public async Task PendingCompletionIsConditionalAndPreservesOriginalIdentityAndDuration(string terminal)
+    {
+        var store = new SqliteAuditStore(DatabasePath);
+        var call = new AuditCall(Guid.NewGuid(), DateTimeOffset.UtcNow, "caller", "tool", RiskLevel.System, "{}");
+        await store.BeginAsync(call, CancellationToken.None);
+        Task Complete(Guid id, string state) => store.CompletePendingAsync(id, state, null, CancellationToken.None);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Complete(call.CallId, terminal));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Complete(Guid.NewGuid(), terminal));
+        await store.CompleteAsync(call.CallId, "Pending", 12.5, null, CancellationToken.None);
+        await Assert.ThrowsAnyAsync<ArgumentException>(() => Complete(call.CallId, "Cancelled"));
+        var attempts = await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => Task.Run(async () =>
+        {
+            try { await Complete(call.CallId, terminal); return true; }
+            catch (InvalidOperationException) { return false; }
+        })));
+        Assert.Equal(1, attempts.Count(value => value));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.CompleteAsync(call.CallId, "Succeeded", 0, null, CancellationToken.None));
+        await using var connection = new SqliteConnection($"Data Source={DatabasePath};Pooling=False");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT State, Caller, Tool, SanitizedParameters, DurationMilliseconds FROM AuditCalls";
+        await using var reader = await command.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal(terminal, reader.GetString(0));
+        Assert.Equal(call.Caller, reader.GetString(1));
+        Assert.Equal(call.Tool, reader.GetString(2));
+        Assert.Equal(call.SanitizedParameters, reader.GetString(3));
+        Assert.Equal(12.5, reader.GetDouble(4));
+        Assert.False(await reader.ReadAsync());
+    }
+
+    [Fact]
+    public async Task PendingCompletionLeavesHistoricalRowsAndCancelledOrInvalidTargetsUntouched()
+    {
+        var store = new SqliteAuditStore(DatabasePath);
+        var old = new AuditCall(Guid.NewGuid(), new DateTimeOffset(2025, 1, 1, 0, 0, 0, TimeSpan.Zero), "régi hívó", "régi eszköz", RiskLevel.System, "{\"text\":\"régi\"}");
+        await store.BeginAsync(old, CancellationToken.None);
+        await store.CompleteAsync(old.CallId, "Pending", 42, null, CancellationToken.None);
+        var current = old with { CallId = Guid.NewGuid(), TimestampUtc = DateTimeOffset.UtcNow };
+        await new SqliteAuditStore(DatabasePath).BeginAsync(current, CancellationToken.None);
+        await store.CompleteAsync(current.CallId, "Pending", 1, null, CancellationToken.None);
+        foreach (var state in new[] { "Started", "Pending", "Cancelled", "Executed", "unknown", "" })
+            await Assert.ThrowsAnyAsync<ArgumentException>(() => store.CompletePendingAsync(current.CallId, state, null, CancellationToken.None));
+        await Assert.ThrowsAnyAsync<ArgumentException>(() => store.CompletePendingAsync(Guid.Empty, "Failed", null, CancellationToken.None));
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => store.CompletePendingAsync(current.CallId, "Failed", null, cancellation.Token));
+        await new SqliteAuditStore(DatabasePath).CompletePendingAsync(current.CallId, "Rejected", null, CancellationToken.None);
+        await using var connection = new SqliteConnection($"Data Source={DatabasePath};Pooling=False");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT State, DurationMilliseconds, SanitizedParameters FROM AuditCalls WHERE CallId = $id";
+        command.Parameters.AddWithValue("$id", old.CallId.ToString());
+        await using var reader = await command.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal("Pending", reader.GetString(0));
+        Assert.Equal(42, reader.GetDouble(1));
+        Assert.Equal(old.SanitizedParameters, reader.GetString(2));
+        Assert.False(await reader.ReadAsync());
+    }
+
     public void Dispose() => Directory.Delete(directory, recursive: true);
 }

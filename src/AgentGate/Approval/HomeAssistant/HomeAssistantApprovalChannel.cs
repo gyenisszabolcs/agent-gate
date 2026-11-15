@@ -14,8 +14,10 @@ public sealed class HomeAssistantApprovalChannel(
     ISecretProvider secrets,
     IApprovalWebSocketFactory sockets,
     IApprovalHttpHandlerFactory httpHandlers,
-    TimeProvider clock) : BackgroundService, IApprovalChannel
+    TimeProvider clock,
+    ApprovalPushFormatter? formatter = null) : BackgroundService, IApprovalChannel
 {
+    private readonly ApprovalPushFormatter presentation = formatter ?? new ApprovalPushFormatter();
     private readonly HomeAssistantApprovalOptions options = configured.Value.IsValid()
         ? configured.Value : throw new OptionsValidationException(Options.DefaultName, typeof(HomeAssistantApprovalOptions), [HomeAssistantApprovalOptions.SafeMessage]);
     private readonly Channel<ApprovalDecision> decisions = Channel.CreateBounded<ApprovalDecision>(256);
@@ -229,7 +231,7 @@ public sealed class HomeAssistantApprovalChannel(
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(options.TimeoutSeconds));
             var token = await ReadTokenAsync(deadline.Token);
-            var message = $"{SafeText(request.Caller, 128, token)}\n{request.Tool}\n{request.Risk}\n{SafeText(request.Summary, 512, token)}\nLejárat: {request.ExpiresAt:O}\nAzonosító: {request.Id.ToString("N")[..8]}";
+            var message = presentation.Request(request, token);
             message = message.Replace(token, "[REDACTED]", StringComparison.Ordinal);
             if (!available) throw new InvalidOperationException();
             await PostAsync(new
@@ -294,12 +296,6 @@ public sealed class HomeAssistantApprovalChannel(
         if (acknowledgement.RootElement.ValueKind != JsonValueKind.Array) throw new InvalidOperationException();
     }
 
-    private static string SafeText(string value, int limit, string token)
-    {
-        var safe = SecretRedactor.RedactText(value.Replace(token, "[REDACTED]", StringComparison.Ordinal))!;
-        return safe.Length <= limit ? safe : safe[..limit];
-    }
-
     private sealed record NotificationGrant(ApprovalNotice Notice, string ApproveCode, string RejectCode)
     {
         public bool Decided { get; set; }
@@ -340,7 +336,7 @@ public sealed class HomeAssistantApprovalChannel(
                 ApprovalState.Expired => "lejárt",
                 _ => "sikertelen; ez nem jelenti a már végrehajtott művelet visszagörgetését"
             };
-            var message = $"{SafeText(grant.Notice.Caller, 128, token)}\n{grant.Notice.Tool}\n{state}\n{SafeText(outcome.Result ?? "", 512, token)}\nAzonosító: {outcome.Id.ToString("N")[..8]}";
+            var message = $"{ApprovalPushFormatter.SafeLine(grant.Notice.Caller, 128, token)}\n{grant.Notice.Tool}\n{state}\n{ApprovalPushFormatter.SafeLine(outcome.Result ?? "", 512, token)}\nAzonosító: {outcome.Id.ToString("N")[..8]}";
             await PostAsync(new { title = "Gate eredmény", message = message.Replace(token, "[REDACTED]", StringComparison.Ordinal) }, token, deadline.Token);
         }
         catch (Exception)
