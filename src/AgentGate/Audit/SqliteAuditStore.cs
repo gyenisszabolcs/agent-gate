@@ -5,7 +5,7 @@ using Microsoft.Data.Sqlite;
 namespace AgentGate.Audit;
 
 /// <summary>Önálló tároló előzetesen titokmentesített auditadatokhoz; nem végez szűrést.</summary>
-public sealed class SqliteAuditStore
+public sealed class SqliteAuditStore : IAuditStore
 {
     private readonly string connectionString;
 
@@ -85,6 +85,60 @@ public sealed class SqliteAuditStore
         return entries.AsReadOnly();
     }
 
+    public async Task BeginAsync(AuditCall call, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(call);
+        ArgumentException.ThrowIfNullOrWhiteSpace(call.Caller);
+        ArgumentException.ThrowIfNullOrWhiteSpace(call.Tool);
+        ArgumentNullException.ThrowIfNull(call.SanitizedParameters);
+        if (call.CallId == Guid.Empty || call.TimestampUtc.Offset != TimeSpan.Zero || !Enum.IsDefined(call.RiskLevel)
+            || call.State != "Started" || call.DurationMilliseconds is not null || call.SanitizedError is not null)
+        {
+            throw new ArgumentException("Érvényes, UTC időpontú kezdő auditbejegyzés szükséges.", nameof(call));
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await InitializeAsync(connection, cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO AuditCalls (CallId, TimestampUtc, Caller, Tool, RiskLevel, SanitizedParameters, State)
+            VALUES ($id, $timestamp, $caller, $tool, $risk, $parameters, 'Started');
+            """;
+        command.Parameters.AddWithValue("$id", call.CallId.ToString());
+        command.Parameters.AddWithValue("$timestamp", call.TimestampUtc.ToString("O", CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue("$caller", call.Caller);
+        command.Parameters.AddWithValue("$tool", call.Tool);
+        command.Parameters.AddWithValue("$risk", (int)call.RiskLevel);
+        command.Parameters.AddWithValue("$parameters", call.SanitizedParameters);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task CompleteAsync(Guid callId, string state, double durationMilliseconds, string? sanitizedError, CancellationToken cancellationToken)
+    {
+        if (callId == Guid.Empty || state is not ("Succeeded" or "Failed" or "Cancelled")
+            || !double.IsFinite(durationMilliseconds) || durationMilliseconds < 0)
+        {
+            throw new ArgumentException("Érvényes hívásazonosító, végállapot és nemnegatív, véges időtartam szükséges.");
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE AuditCalls SET State = $state, DurationMilliseconds = $duration, SanitizedError = $error
+            WHERE CallId = $id AND State = 'Started';
+            """;
+        command.Parameters.AddWithValue("$id", callId.ToString());
+        command.Parameters.AddWithValue("$state", state);
+        command.Parameters.AddWithValue("$duration", durationMilliseconds);
+        command.Parameters.AddWithValue("$error", (object?)sanitizedError ?? DBNull.Value);
+        if (await command.ExecuteNonQueryAsync(cancellationToken) != 1)
+        {
+            throw new InvalidOperationException("A kezdő auditbejegyzés nem véglegesíthető.");
+        }
+    }
+
     private static async Task InitializeAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
@@ -97,6 +151,17 @@ public sealed class SqliteAuditStore
                 SanitizedParameters TEXT NOT NULL,
                 RiskLevel INTEGER NOT NULL,
                 SanitizedResult TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS AuditCalls (
+                CallId TEXT PRIMARY KEY NOT NULL,
+                TimestampUtc TEXT NOT NULL,
+                Caller TEXT NOT NULL,
+                Tool TEXT NOT NULL,
+                RiskLevel INTEGER NOT NULL,
+                SanitizedParameters TEXT NOT NULL,
+                State TEXT NOT NULL,
+                DurationMilliseconds REAL,
+                SanitizedError TEXT
             );
             """;
         await command.ExecuteNonQueryAsync(cancellationToken);

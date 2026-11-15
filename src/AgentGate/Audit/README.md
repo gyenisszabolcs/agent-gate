@@ -1,30 +1,46 @@
-# Önálló SQLite auditnapló
+# MCP-audit és SQLite-tároló
 
-A modul nincs bekötve az alkalmazásba, és nem függ titokszűrőtől. A `SanitizedAuditEntry` minden szöveges mezője — a hívó, az eszköz és az eredmény is — **kizárólag előzetesen titokmentesített adatot** tartalmazhat. A név szerződés, nem automatikus titokfelismerés. Nyers paraméter, kivételszöveg, token vagy jelszó nem adható át.
+## Közös eszközhívási kapu
 
-## Használat és validálás
+A `McpAuditFilter` az SDK közös `tools/call` filtere. Minden regisztrált eszköznek explicit `ToolRisk` és `ToolAuditParameters` metaadat szükséges; az üres naplóparaméter-lista is explicit. Az attribútum csak valóban auditálható paraméterneveket engedélyezzen.
 
-- `new SqliteAuditStore(databasePath)`: kötelező, teljes fájlútvonal meglévő szülőkönyvtárral. Nincs alapértelmezett adatbázis, relatív út, SQLite URI vagy memóriatároló. A konstruktor nem hoz létre fájlt/könyvtárat.
-- `AppendAsync(entry, cancellationToken)`: UTC (`Offset == 0`) időpont, nem üres hívó/eszköz, nem null titokmentesített paraméter/eredmény, létező `Policy.RiskLevel`. Az üres paraméter/eredmény megengedett. A hibás bejegyzés adatbázis-megnyitás előtt elutasításra kerül.
-- `ReadAllAsync(cancellationToken)`: beszúrási sorrendű pillanatnyi lista, minden eredeti mezővel. Új adatbázisnál üres lista. Nem lapozott API; nagy mennyiségű naplóhoz később korlátozott lekérdezés szükséges.
-- Az első művelet hozza létre a fájlt és a sémát, ha hiányoznak. Minden művelet saját, nem poolozott kapcsolatot használ, és lezárja az olvasót/parancsot/kapcsolatot. A beszúrás egyetlen atomi SQL-utasítás, minden mező paraméterezett. Nincs háttérpuffer.
-- Hozzáférési, sérült adatbázis- és SQLite-hibák továbbterjednek: nincs csendes siker vagy másik adatbázisra visszaesés. A kivételek nem továbbíthatók automatikusan külső naplóba/válaszba.
+Az engedélyezett skalárértékeken a `SecretRedactor` fut. Objektum, tömb és nem engedélyezett érték helyett `[kihagyva]` szerepel. A nem megbízható paraméternevek sem másolódnak át: közös jelölő helyettesíti őket. Nyers kivétel és MCP-hibapayload helyett rögzített, szűrt hibaszöveg kerül az auditba; a sikeres eszközválasz nem auditadat.
 
-## Új függőség
+```json
+{
+  "Audit": {
+    "DatabasePath": "/var/lib/agentgate/audit.db",
+    "Caller": "agent"
+  }
+}
+```
 
-Egy közvetlen csomag: **Microsoft.Data.Sqlite 10.0.15**. A Microsoft könnyű ADO.NET SQLite providere; teljes EF/ORM nem szükséges. A normál csomag a natív SQLite futtatókörnyezetet is függőségként biztosítja, így nem kell kézzel telepített gépi SQLite-ra támaszkodni.
+Ezek az alapértékek; a szokásos .NET konfiguráció, például `Audit__DatabasePath` és `Audit__Caller` felülírhatja őket. A hívó szerveroldali konfigurációból származik, nem a kliens önbevallásából. A szülőkönyvtárnak léteznie és írhatónak kell lennie; a modul nem hoz létre telepítési könyvtárat.
 
-A verziót a NuGet elsődleges csomagoldalán és a hivatalos flat-container verziólistájában ellenőriztem; a 10.0-s stabil vonal ellenőrzéskor elérhető legmagasabb javítóverziója 10.0.15 volt. Ez szándékosan a projekt .NET 10-es vonalához igazított, rögzített verzió, nem az összes főverzió közül választott legújabb.
+## Tartós hívásállapot
 
-Elsődleges források:
-- https://www.nuget.org/packages/Microsoft.Data.Sqlite/10.0.15
-- https://api.nuget.org/v3-flatcontainer/microsoft.data.sqlite/index.json
-- https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/async
+Az `IAuditStore.BeginAsync` GUID-azonosítóval, UTC időponttal, hívóval, eszközzel, kockázattal és titokmentes paraméterekkel `Started` sort tartósít. Ennek sikere előtt az eszközkód nem futhat. Írási hiba biztonságos eszközhibát ad, végrehajtás nélkül.
 
-**Async korlát:** az API aszinkron és a megszakítási tokent minden azt fogadó ADO.NET hívás megkapja. A Microsoft dokumentációja szerint a SQLite nem biztosít valódi aszinkron I/O-t, ezért a provider async metódusai szinkron módon hajtódnak végre. Folyamatban lévő natív I/O azonnali megszakítását a modul nem ígéri; a már megszakított műveletet elutasítja.
+A `CompleteAsync` csak a megfelelő azonosítójú `Started` sort zárhatja `Succeeded`, `Failed` vagy `Cancelled` állapotba, nemnegatív, véges időtartammal és opcionális titokmentes hibával. Az időtartam a kezdőbejegyzés utáni végrehajtási szakaszt méri, a lezáró adatbázisírást nem. Ismételt vagy nem létező lezárás elutasított.
 
-## Kockázat és későbbi bekötés
+Lezárási hiba nem ad teljes sikert, és nem görgeti vissza a már lefutott eszközt: a sor `Started` állapotban marad. A kliens megszakítását az eszköz megkapja; a lezárás külön, öt másodperces határidejű tokent használ. Ez nem folyamatkilövési vagy azonnali natív I/O-megszakítási garancia.
 
-Közepes kockázat: tartós, nem titkosított auditadat; a hívó felelőssége az előzetes titokmentesítés. Az útvonal explicit konfiguráció, nem jogosultsági sandbox vagy szimbolikuslink-védelem. Éles bekötés előtt külön feladat a fájl/könyvtár jogosultsága, engedélyezett tárolási gyökér, megőrzés, mentés, kapacitáskezelés és a titokszűrés bekötése. E modul nem módosít jogosultságot, és nem ér el éles rendszert.
+Ismeretlen vagy hiányos metaadatú hívásnál nincs eszközvégrehajtás, de írható tárolónál `Failed` elutasítási audit készül. Az ismeretlen név fix marker, az argumentumok kimaradnak. Hiányzó/érvénytelen kockázatnál a `Forbidden` elutasítási besorolás, nem egy ismeretlen eszköz feltételezett üzleti kockázata. Érvényes kockázat hiányzó engedélyezőlistánál megmarad.
 
-A saját xUnit tesztek egyedi `Directory.CreateTempSubdirectory` könyvtárakban dolgoznak (a környezeti TMPDIR a scratch könyvtárra mutat), és `Dispose` alatt rekurzívan takarítanak. Csak szintetikus adatokat használnak. Lefedés: teljes mező-roundtrip, tartósság új példánnyal/kapcsolattal, beszúrási sorrend, SQL-karakterek minden szövegmezőben és az útvonalban, adatbázis-izoláció, üres olvasás, hibás/hiányzó útvonal, hibás bejegyzés és előzetes megszakítás.
+## Tároló API és kompatibilitás
+
+- `new SqliteAuditStore(databasePath)`: teljes fájlútvonal meglévő szülőkönyvtárban; nincs relatív, URI- vagy memóriatároló. A konstruktor nem hoz létre fájlt/könyvtárat.
+- Az MCP-hívásállapot az `AuditCalls` táblában van. A régi `AppendAsync`/`ReadAllAsync` API és `SanitizedAuditEntry` továbbra is az `AuditEntries` táblát használja, nem az új hívássorokat.
+- Az első művelet létrehozza a hiányzó sémát, a régi adatokat nem törli. Minden művelet saját, nem poolozott kapcsolatot használ, paraméterezett SQL-lel és lezárt erőforrásokkal. Nincs háttérpuffer.
+- A közvetlen tároló API minden szöveges mezője előzetesen titokmentesített adatot követel; nem önálló titokszűrő. A nyers tárolói kivételek nem továbbíthatók külső naplóba/válaszba; a közös kapu biztonságos hibává alakítja őket.
+- A régi `ReadAllAsync` nem lapozott. Nagy mennyiségű adathoz korlátozott lekérdezés szükséges.
+
+## Naplózási és üzemeltetési korlátok
+
+A rögzített SDK a filteren kívül nyers eszköznevet, Trace szinten üzenettartalmat naplózhat. Ezért a `ModelContextProtocol.Server.` kategóriacsalád normál naplózása minden szinten tiltott; providerspecifikus szabály sem kapcsolhatja vissza. Az alkalmazás- és ASP.NET-naplózás megmarad.
+
+Az SDK Warning/Error szintű session- és transportdiagnosztikái is kiesnek. A tartós audit csak eszközhívás-szinten helyettesít: auth előtt elutasított HTTP, filter előtt hibás protokollkérés, initialize/list és más nem-tool művelet nem `AuditCalls` bejegyzés. Külső body logging, telemetry exporter, új SDK vagy saját eszköznapló külön tartalombiztonsági ellenőrzést igényel; a nyers SDK-naplót éles hibakeresésre sem szabad visszakapcsolni.
+
+A szövegszűrés heurisztikus, tetszőleges jelöletlen titkot nem ismer fel. Az eszköz felel a sikeres válasz titokmentességéért. A SQLite provider async API-ja alatt szinkron I/O futhat, ezért azonnali megszakítás nem garantált.
+
+Az adatbázis nem titkosított. Fájl-/könyvtárjogosultság, tárolási gyökér, megőrzés, mentés és kapacitáskezelés a befogadó rendszer feladata. Az útvonal nem jogosultsági sandbox vagy szimbolikuslink-védelem.
