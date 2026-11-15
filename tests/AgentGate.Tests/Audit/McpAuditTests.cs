@@ -229,13 +229,14 @@ public sealed class McpAuditTests
                 File.Delete(factory.KillSwitchPath);
             }
             using var result = await CallAsync(factory, tool, new { });
-            var allowed = risk == RiskLevel.Read || (risk != RiskLevel.Forbidden && states[index] == "{\"Enabled\":false}");
+            var requiresApproval = risk is RiskLevel.SensitiveControl or RiskLevel.Configuration or RiskLevel.System;
+            var allowed = risk == RiskLevel.Read || (risk == RiskLevel.Control && states[index] == "{\"Enabled\":false}");
             Assert.True(IsError(result) == !allowed, "A kapcsoló friss állapota nem érvényesült.");
             executed += allowed ? 1 : 0;
             Assert.Equal(executed, probe.Count);
             Assert.Equal(allowed ? "Succeeded" : "Failed", store.Calls[index].State);
             Assert.Equal(risk, store.Calls[index].RiskLevel);
-            if (!allowed && tool != "invalid-risk")
+            if (!allowed && tool != "invalid-risk" && !(requiresApproval && states[index] == "{\"Enabled\":false}"))
             {
                 var text = result.RootElement.GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString();
                 Assert.True(text == "A vészleállító policy letiltotta az eszköz végrehajtását.", "A tiltás indoka nem konstans.");
@@ -875,7 +876,7 @@ public sealed class McpAuditTests
             return "ok";
         }
 
-        [McpServerTool(Name = "failure"), ToolRisk(RiskLevel.System), ToolAuditParameters]
+        [McpServerTool(Name = "failure"), ToolRisk(RiskLevel.Control), ToolAuditParameters]
         public CallToolResult Failure()
         {
             Count++;

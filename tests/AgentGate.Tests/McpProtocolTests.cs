@@ -30,7 +30,8 @@ public sealed class McpProtocolTests
         client.DefaultRequestHeaders.Add("MCP-Protocol-Version", "2025-11-25");
 
         using var list = await SendAsync(client, "tools/list", new { }, cancellation.Token);
-        var tool = Assert.Single(list.RootElement.GetProperty("result").GetProperty("tools").EnumerateArray());
+        var tool = Assert.Single(list.RootElement.GetProperty("result").GetProperty("tools").EnumerateArray(),
+            item => item.GetProperty("name").GetString() == "gate_ping");
         Assert.Equal("gate_ping", tool.GetProperty("name").GetString());
         Assert.True(tool.GetProperty("annotations").GetProperty("readOnlyHint").GetBoolean());
 

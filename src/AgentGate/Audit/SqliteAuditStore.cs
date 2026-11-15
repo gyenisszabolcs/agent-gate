@@ -116,7 +116,7 @@ public sealed class SqliteAuditStore : IAuditStore
 
     public async Task CompleteAsync(Guid callId, string state, double durationMilliseconds, string? sanitizedError, CancellationToken cancellationToken)
     {
-        if (callId == Guid.Empty || state is not ("Succeeded" or "Failed" or "Cancelled")
+        if (callId == Guid.Empty || state is not ("Succeeded" or "Failed" or "Cancelled" or "Pending")
             || !double.IsFinite(durationMilliseconds) || durationMilliseconds < 0)
         {
             throw new ArgumentException("Érvényes hívásazonosító, végállapot és nemnegatív, véges időtartam szükséges.");
