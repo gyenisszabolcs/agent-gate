@@ -8,6 +8,7 @@ namespace AgentGate.Tools;
 [McpServerToolType]
 public sealed class GateTools
 {
+    [AgentGate.Audit.ToolAuditParameters]
     [ToolRisk(RiskLevel.Read)]
     [McpServerTool(Name = "gate_ping", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
     [Description("Elérhetőségi próba: pong és a szerver aktuális UTC ideje.")]

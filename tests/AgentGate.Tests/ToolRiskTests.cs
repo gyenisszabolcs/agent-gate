@@ -20,6 +20,7 @@ public sealed class ToolRiskTests
         Assert.NotEmpty(methods);
         foreach (var method in methods)
         {
+            Assert.Single(method.GetCustomAttributes<AgentGate.Audit.ToolAuditParametersAttribute>());
             var risk = Assert.Single(method.GetCustomAttributes<ToolRiskAttribute>());
             Assert.True(Enum.IsDefined(risk.Level), "Érvénytelen eszközkockázati szint.");
         }
@@ -30,12 +31,14 @@ public sealed class ToolRiskTests
         Assert.NotEmpty(tools);
         foreach (var tool in tools)
         {
+            Assert.Single(tool.Metadata.OfType<AgentGate.Audit.ToolAuditParametersAttribute>());
             var risk = Assert.Single(tool.Metadata.OfType<ToolRiskAttribute>());
             Assert.True(Enum.IsDefined(risk.Level), "Érvénytelen regisztrált eszközkockázati szint.");
         }
         Assert.Equal(methods.Length, tools.Count);
         var ping = Assert.Single(tools);
         Assert.Equal("gate_ping", ping.ProtocolTool.Name);
+        Assert.Empty(Assert.Single(ping.Metadata.OfType<AgentGate.Audit.ToolAuditParametersAttribute>()).Names);
         Assert.Equal(RiskLevel.Read, Assert.Single(ping.Metadata.OfType<ToolRiskAttribute>()).Level);
     }
 

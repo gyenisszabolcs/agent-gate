@@ -44,6 +44,19 @@ public sealed class McpProtocolTests
         var serverTime = data.GetProperty("serverTime").GetDateTimeOffset();
         Assert.Equal(TimeSpan.Zero, serverTime.Offset);
         Assert.InRange(serverTime, before, after);
+
+        await using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={factory.AuditPath};Pooling=False");
+        await connection.OpenAsync(cancellation.Token);
+        await using var audit = connection.CreateCommand();
+        audit.CommandText = "SELECT Caller, Tool, State, DurationMilliseconds, SanitizedParameters FROM AuditCalls";
+        await using var reader = await audit.ExecuteReaderAsync(cancellation.Token);
+        Assert.True(await reader.ReadAsync(cancellation.Token));
+        Assert.Equal("test-caller", reader.GetString(0));
+        Assert.Equal("gate_ping", reader.GetString(1));
+        Assert.Equal("Succeeded", reader.GetString(2));
+        Assert.True(reader.GetDouble(3) >= 0);
+        Assert.Equal("{}", reader.GetString(4));
+        Assert.False(await reader.ReadAsync(cancellation.Token));
     }
 
     private static async Task<JsonDocument> SendAsync(HttpClient client, string method, object parameters, CancellationToken cancellationToken)
