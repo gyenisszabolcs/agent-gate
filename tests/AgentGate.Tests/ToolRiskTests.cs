@@ -36,10 +36,16 @@ public sealed class ToolRiskTests
             Assert.True(Enum.IsDefined(risk.Level), "Érvénytelen regisztrált eszközkockázati szint.");
         }
         Assert.Equal(methods.Length, tools.Count);
-        var ping = Assert.Single(tools);
+        var ping = Assert.Single(tools, tool => tool.ProtocolTool.Name == "gate_ping");
         Assert.Equal("gate_ping", ping.ProtocolTool.Name);
         Assert.Empty(Assert.Single(ping.Metadata.OfType<AgentGate.Audit.ToolAuditParametersAttribute>()).Names);
         Assert.Equal(RiskLevel.Read, Assert.Single(ping.Metadata.OfType<ToolRiskAttribute>()).Level);
+        var status = Assert.Single(tools, tool => tool.ProtocolTool.Name == "gate_approval_status");
+        Assert.Equal(RiskLevel.Read, Assert.Single(status.Metadata.OfType<ToolRiskAttribute>()).Level);
+        Assert.Equal(["requestId"], Assert.Single(status.Metadata.OfType<AgentGate.Audit.ToolAuditParametersAttribute>()).Names);
+        var approvalTest = Assert.Single(tools, tool => tool.ProtocolTool.Name == "gate_approval_test");
+        Assert.Equal(RiskLevel.SensitiveControl, Assert.Single(approvalTest.Metadata.OfType<ToolRiskAttribute>()).Level);
+        Assert.Equal(["text"], Assert.Single(approvalTest.Metadata.OfType<AgentGate.Audit.ToolAuditParametersAttribute>()).Names);
     }
 
     [Fact]

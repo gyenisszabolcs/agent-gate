@@ -61,6 +61,7 @@ public sealed class McpAuditFilter(IServiceProvider services, IOptions<AuditOpti
         var started = Stopwatch.GetTimestamp();
         CallToolResult result;
         var state = "Succeeded";
+        Guid? pendingRequestId = null;
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -73,9 +74,27 @@ public sealed class McpAuditFilter(IServiceProvider services, IOptions<AuditOpti
                 var enabled = await services.GetRequiredService<IKillSwitchStateSource>().IsEnabledAsync(cancellationToken);
                 cancellationToken.ThrowIfCancellationRequested();
                 rejected = !KillSwitchPolicy.IsAllowed(risk, enabled);
-                result = rejected
-                    ? Error("A vészleállító policy letiltotta az eszköz végrehajtását.")
-                    : await next(request, cancellationToken);
+                if (rejected)
+                {
+                    result = Error("A vészleállító policy letiltotta az eszköz végrehajtását.");
+                }
+                else if (risk is RiskLevel.SensitiveControl or RiskLevel.Configuration or RiskLevel.System)
+                {
+                    var id = await services.GetRequiredService<AgentGate.Approval.ApprovalGate>().RequestAsync(
+                        call.CallId, tool!.ProtocolTool.Name, risk, allowed, request.Params.Arguments?.ToDictionary(pair => pair.Key, pair => pair.Value)
+                            ?? new Dictionary<string, JsonElement>(), cancellationToken);
+                    pendingRequestId = id;
+                    rejected = id is null;
+                    result = id is { } requestId
+                        ? new CallToolResult { Content = [new TextContentBlock { Text = $"jóváhagyásra vár: {requestId}" }] }
+                        : Error("A jóváhagyási kérés nem küldhető; a művelet nem indult el.");
+                    if (!rejected)
+                        state = "Pending";
+                }
+                else
+                {
+                    result = await next(request, cancellationToken);
+                }
             }
             cancellationToken.ThrowIfCancellationRequested();
             if (result.IsError is true)
@@ -110,12 +129,16 @@ public sealed class McpAuditFilter(IServiceProvider services, IOptions<AuditOpti
         {
             // Minden hibaválasz itt már konstans vagy egyszer szűrt, megbízható üzenet; az újraszűrés megváltoztathatná.
             await store.CompleteAsync(call.CallId, state, duration,
-                state == "Succeeded" ? null : ((TextContentBlock)result.Content[0]).Text, completion.Token);
+                state is "Succeeded" or "Pending" ? null : ((TextContentBlock)result.Content[0]).Text, completion.Token);
         }
         catch (Exception)
         {
+            if (pendingRequestId is { } failedId)
+                services.GetRequiredService<AgentGate.Approval.ApprovalGate>().ConfirmRequest(failedId, false);
             return Error("Az audit lezárása sikertelen; a kezdőbejegyzés befejezetlen. Ez nem jelenti a már végrehajtott művelet visszagörgetését.");
         }
+        if (pendingRequestId is { } committedId)
+            services.GetRequiredService<AgentGate.Approval.ApprovalGate>().ConfirmRequest(committedId, state == "Pending");
         return result;
     }
 
