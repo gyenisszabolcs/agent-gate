@@ -64,9 +64,19 @@ public sealed class McpAuditFilter(IServiceProvider services, IOptions<AuditOpti
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            result = rejected
-                ? Error("Az eszköz ismeretlen vagy auditmetaadata hiányos; a végrehajtás letiltva.")
-                : await next(request, cancellationToken);
+            if (rejected)
+            {
+                result = Error("Az eszköz ismeretlen vagy auditmetaadata hiányos; a végrehajtás letiltva.");
+            }
+            else
+            {
+                var enabled = await services.GetRequiredService<IKillSwitchStateSource>().IsEnabledAsync(cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                rejected = !KillSwitchPolicy.IsAllowed(risk, enabled);
+                result = rejected
+                    ? Error("A vészleállító policy letiltotta az eszköz végrehajtását.")
+                    : await next(request, cancellationToken);
+            }
             cancellationToken.ThrowIfCancellationRequested();
             if (result.IsError is true)
             {
@@ -82,6 +92,11 @@ public sealed class McpAuditFilter(IServiceProvider services, IOptions<AuditOpti
             state = "Cancelled";
             result = Error("Az eszközhívás megszakadt.");
         }
+        catch (AgentGate.Tools.GateToolException exception)
+        {
+            state = "Failed";
+            result = Error(SecretRedactor.RedactText(exception.Message)!);
+        }
         catch (Exception)
         {
             // A provider tetszőleges, jelöletlen titkot is dobhat: az eredeti kivételt nem továbbítjuk.
@@ -93,8 +108,9 @@ public sealed class McpAuditFilter(IServiceProvider services, IOptions<AuditOpti
         using var completion = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         try
         {
+            // Minden hibaválasz itt már konstans vagy egyszer szűrt, megbízható üzenet; az újraszűrés megváltoztathatná.
             await store.CompleteAsync(call.CallId, state, duration,
-                state == "Succeeded" ? null : SecretRedactor.RedactText(((TextContentBlock)result.Content[0]).Text), completion.Token);
+                state == "Succeeded" ? null : ((TextContentBlock)result.Content[0]).Text, completion.Token);
         }
         catch (Exception)
         {

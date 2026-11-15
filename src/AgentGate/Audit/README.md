@@ -4,7 +4,19 @@
 
 A `McpAuditFilter` az SDK közös `tools/call` filtere. Minden regisztrált eszköznek explicit `ToolRisk` és `ToolAuditParameters` metaadat szükséges; az üres naplóparaméter-lista is explicit. Az attribútum csak valóban auditálható paraméterneveket engedélyezzen.
 
-Az engedélyezett skalárértékeken a `SecretRedactor` fut. Objektum, tömb és nem engedélyezett érték helyett `[kihagyva]` szerepel. A nem megbízható paraméternevek sem másolódnak át: közös jelölő helyettesíti őket. Nyers kivétel és MCP-hibapayload helyett rögzített, szűrt hibaszöveg kerül az auditba; a sikeres eszközválasz nem auditadat.
+Az engedélyezett skalárértékeken a `SecretRedactor` fut. Objektum, tömb és nem engedélyezett érték helyett `[kihagyva]` szerepel. A nem megbízható paraméternevek sem másolódnak át: közös jelölő helyettesíti őket. Jelöletlen nyers kivétel és MCP-hibapayload helyett rögzített, szűrt hibaszöveg kerül az auditba; a sikeres eszközválasz nem auditadat.
+
+A tartós `BeginAsync` után, a végrehajtás előtt a [fájlos vészleállító](../Policy/KillSwitch.md) friss állapotát is ellenőrizzük. Tiltáskor nincs eszközvégrehajtás, a lezárás `Failed`, a biztonságos indok a válaszban és az auditban azonos.
+
+## Kifejezetten jelölt eszközhiba
+
+Az eszköz fejlesztője `AgentGate.Tools.GateToolException` kivétellel jelezhet kiadhatónak szánt hibát. Csak a közvetlenül így jelölt típus `Message` mezője jut át, kötelező `SecretRedactor.RedactText` szűrés után, egyébként változatlanul. A válasz `IsError=true`, a lezárás `Failed`; az audit hibamezője ugyanaz a szűrt üzenet. Stack, `Data` és belső kivétel nem része a kiadási szerződésnek.
+
+Más kivétel (a jelöletlen SDK `McpException` is), becsomagolt jelölő és tetszőleges `IsError` eredmény szövege/strukturált tartalma továbbra is az általános `Az eszköz végrehajtása sikertelen.` hibára cserélődik. A szövegegyezés nem típusbizalom, a hibapayload önmagában soha nem jelöl biztonságos üzenetet. A rögzített SDK 2.4.0 regisztrált eszközének közvetlen kivételét a közös filter még típushelyesen megkapja; ez nem az SDK tetszőleges hibakonverziójának visszafejtése. Új SDK vagy egyedi belső adapter ezt a határt újraellenőrzendővé teszi.
+
+A jelölt üzenet sem automatikusan titokmentes: a heurisztikus szűrő tetszőleges jelöletlen credentialt nem ismer fel. A fejlesztő ne jelöljön providerből másolt nyers üzenetet biztonságosnak. Az audit elő-/utóírási hibája továbbra is felülírja az eszköz eredményét a korábbi zárt hibával; a lezárási hiba nem visszagörgetés.
+
+## Auditkonfiguráció
 
 ```json
 {

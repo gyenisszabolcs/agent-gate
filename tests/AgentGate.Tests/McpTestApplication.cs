@@ -11,11 +11,18 @@ internal sealed class McpTestApplication(string? token, Action<IServiceCollectio
 {
     private readonly string directory = Directory.CreateTempSubdirectory("agent-gate-mcp-").FullName;
     public string AuditPath => Path.Combine(directory, "audit.db");
+    public string KillSwitchPath => Path.Combine(directory, "kill-switch.json");
+    public bool InitializeKillSwitch { get; init; } = true;
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
+        if (InitializeKillSwitch)
+        {
+            File.WriteAllText(KillSwitchPath, "{\"Enabled\":false}");
+        }
         builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(new Dictionary<string, string?>
         {
+            ["KillSwitch:Path"] = KillSwitchPath,
             ["Audit:DatabasePath"] = AuditPath,
             ["Audit:Caller"] = "test-caller"
         }));

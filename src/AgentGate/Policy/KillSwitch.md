@@ -1,44 +1,52 @@
-# Konfigurációvezérelt vészleállítás (#12)
+# Fájlos vészleállítás
 
-**A modul még nincs az éles védelmi vagy végrehajtási láncba kötve.** Nem regisztrál szolgáltatást, nem változtatja a `Program.cs`-t vagy az MCP-eszközöket. Önmagában nem védi az éles műveletvégrehajtást. Nincs telepítés, éles rendszerelérés vagy éles kapcsolóállítás.
+## Bekötés és döntés
 
-## Forrás és szerződés
+A `Program.cs` regisztrálja a friss, megszakítható fájlforrást (`IKillSwitchStateSource` / `FileKillSwitchStateSource`). A közös `McpAuditFilter` sorrendje: tartós `BeginAsync` → friss kapcsolóolvasás → a #16-ból közösített `KillSwitchPolicy.IsAllowed(level, enabled)` döntés → csak engedély esetén eszközvégrehajtás → audit lezárása. A kezdő audit hibája esetén sem kapcsolóolvasás, sem eszközvégrehajtás nem történik.
 
-A választott minimális forrás az `IOptionsMonitor<KillSwitchOptions>` alapértelmezett, név nélküli options-példánya. Külön fájlolvasó nincs. A későbbi integráció a `KillSwitch` konfigurációs szakaszt kötheti hozzá; az érték kulcsa `KillSwitch:Enabled`. Ez szerződés és tesztelt példa, **nem meglévő alkalmazásbekötés**:
+- `Enabled = true`: kizárólag `Read` engedett.
+- `Enabled = false`: `Read`, `Control`, `SensitiveControl`, `Configuration`, `System` ezen a szűrőn átengedhető. Ez nem jogosultság vagy jóváhagyás; a további ellenőrzéseket nem helyettesíti.
+- `Forbidden` és nem definiált enumérték mindig tiltott.
+- Hiányzó, olvashatatlan, hibás állapot: Read-only; a gate ettől elindulhat.
+- Policy-tiltáskor nincs eszközvégrehajtás; `Failed` audit és `IsError=true` válasz készül ugyanazzal a konstans indokkal: `A vészleállító policy letiltotta az eszköz végrehajtását.`
 
-```csharp
-services.AddOptions<KillSwitchOptions>()
-    .Bind(configuration.GetSection("KillSwitch"));
-var policy = new KillSwitchPolicy(optionsMonitor);
-var allowed = policy.IsAllowed(riskLevel);
+Az előző monitoradapter (`new KillSwitchPolicy(IOptionsMonitor<KillSwitchOptions>)`, `IsAllowed(level)`) megmarad az önálló modul fogyasztóinak, ugyanazzal a közös döntési függvénnyel. Az éles auditkapu **nem** a konfigurációfigyelőre vagy a korábbi `KillSwitch:Enabled` kulcsra támaszkodik: minden hívás friss fájlolvasást végez. Nincs utolsó jó `false`, watcher-cache vagy újratöltési késleltetés miatti nyitva maradás.
+
+## Fájl és konfiguráció
+
+Alapértelmezett éles útvonal: `/etc/agentgate/kill-switch.json`. UTF-8 JSON, opcionális UTF-8 BOM-mal, pontosan egy `Enabled` nevű logikai mezővel:
+
+```json
+{"Enabled": true}
 ```
 
-- `Enabled = true`: kizárólag `RiskLevel.Read` engedett.
-- `Enabled = false`: `Read`, `Control`, `SensitiveControl`, `Configuration`, `System` ezen a szűrőn átengedhető. Ez nem általános jogosultság vagy jóváhagyás.
-- Hiányzó szakasz/érték (`Enabled = null`), hibás logikai érték miatti kötési hiba, validálási vagy olvasási kivétel: kizárólag `Read` engedett.
-- `Forbidden`, nem definiált enumérték és a később esetleg hozzáadott szint mindig tiltott, amíg nincs kifejezetten engedélyezve a szűrőben.
+Kikapcsoláshoz:
 
-Az `IsAllowed` **minden híváskor egyszer** olvassa a `CurrentValue` értékét, az olvasási szint vizsgálatakor is. Nem tárol korábbi engedélyező állapotot, nem használ `IOptions<T>` pillanatképet és nem iratkozik fel saját változáskezelővel. Hibánál nem használ utolsó ismert jó értéket. A forráskivételt szándékosan szélesen kezeli kizárólag az állapotolvasás körül; a hiba részleteit nem naplózza és nem adja vissza.
+```json
+{"Enabled": false}
+```
 
-A monitor szolgáltatója új állapotképet és működő újratöltési értesítést köteles adni. A monitorba már bekerült változás a következő ellenőrzésre érvényes, alkalmazás-újraindítás nélkül. A modul nem garantál fájlrendszeri eseménykésleltetést, nem von vissza már kiadott döntést és nem szakít meg futó műveletet. A későbbi végrehajtási láncnak a művelet előtt kell újra ellenőriznie.
+Csak a kifejezett, egyetlen `false` oldja fel az írási korlátot. Hiányzó, null, szöveges vagy numerikus érték, duplikált mező (azonos érték esetén is), ismeretlen mező, eltérő kis-/nagybetű, hibás JSON, más kódolás vagy I/O-hiba zár. Nem vezet engedélyező visszaeséshez az sem, ha az előző hívás még `false` értéket olvasott.
 
-**Forráshatár:** ha egy jövőbeli fájl-/konfigurációszolgáltató hibás fájlnál csendben megtartja a korábbi `false` értéket, azt a monitor fogyasztója nem tudja felismerni. Ilyen szolgáltató közvetlen használata nem felel meg a szerződésnek: forráshibánál friss, zárt állapotot vagy a `CurrentValue` olvasásakor kivételt kell biztosítania. Valós fájlos bekötés és hibás fájlok kezelése külön integrációs feladat, nem ennek a modulnak a része.
+A szerveroldali `KillSwitch:Path` / `KillSwitch__Path` útvonal-felülírás helyi teszthosthoz használható. Ez nem MCP-argumentum; a hívó nem választhat állapotfájlt. A gate nem hozza létre és nem írja a kapcsolót vagy annak könyvtárát. HA-konfiguráció, HA-kliens-regisztráció és Bitwarden-token/-provider nem előfeltétel.
 
-## Tesztelés és függőségek
+## Kézi kezelés a hoston
 
-A saját `KillSwitchTests.cs` tesztek mind a hat szintet vizsgálják be- és kikapcsolva, valamint negatív, tartományon kívüli és maximális enumértékeket. Hiányzó beállítás, hiányzó konfigurációs szakasz, hibás kötés, forráskivétel és állapotváltás is szerepel. Tesztmonitor és valódi options monitor memóriabeli konfigurációval fut: nincs éles fájl, hálózati integráció vagy éles szolgáltatás.
-
-A változáskezelési teszt a `false → true → false → hibás → hiányzó → false` sorozatot ellenőrzi ugyanazzal a policy-példánnyal. Hibás kötéskor az újratöltés értesítése is kivételt jelezhet; ez nem jelent engedélyező visszaesést.
-
-Nincs új NuGet-függőség vagy projektfájl-módosítás: az options/configuration/DI a már elérhető ASP.NET Core megosztott keretrendszerből származik.
-
-Ellenőrző parancsok a megoldás gyökerében:
+Ezeket az üzemeltető végzi, nem az agent és nem a szolgáltatás:
 
 ```sh
-dotnet build AgentGate.sln --no-restore
-dotnet test AgentGate.sln --no-build --no-restore
-dotnet test AgentGate.sln --no-build --no-restore --filter 'FullyQualifiedName!~KillSwitchTests'
-dotnet format AgentGate.sln --no-restore --verify-no-changes
+sudo install -d -o root -g root -m 0755 /etc/agentgate
+sudoedit /etc/agentgate/kill-switch.json
+sudo chown root:root /etc/agentgate/kill-switch.json
+sudo chmod 0644 /etc/agentgate/kill-switch.json
 ```
 
-A tesztfuttató meglévő `VSTEST_ARTIFACTS_DIRECTORY` fallback diagnosztikája nem a modul hibája; csomagfrissítés nem része ennek a változásnak.
+A `sudoedit` szerkesztőjében a fenti `true` vagy `false` tartalmat kell menteni. A fájl root tulajdonú és a gate számára csak olvasható; a könyvtár a gate számára nem írható. A szolgáltatás `ProtectSystem=strict` védelmét nem kell lazítani, új írható útvonal nem kell. A `/var/lib/agentgate` továbbra is az audit alkalmazásadat-területe, **nem** a kapcsoló írható állapottára.
+
+A következő auditkapu-ellenőrzés már az új tartalmat használja, restart nélkül. Automatizált konfigurációkezelésnél azonos könyvtáron belüli atomikus fájlcsere szükséges. Átmenetileg hiányzó vagy részlegesen kiírt/hibás fájl is Read-only állapotot eredményez.
+
+## Korlátok
+
+A döntés az ellenőrzéskor olvasott állapotra szól; nem visszamenőleges tranzakció és nem tesz atomikussá egy későbbi műveletet a fájlcserével. Már elindult eszközt nem görget vissza és nem állít le kényszerrel. A kliens megszakítási tokenje továbbmegy a fájl-I/O-ba és az eszközhöz; az audit lezárásának független, korlátos tokenje változatlan.
+
+A fájlútvonal nem jogosultsági sandbox vagy szimbolikuslink-védelem. A root tulajdon, a szülőkönyvtár védelme és a megbízható szerverkonfiguráció üzemeltetési követelmény. A fájl nem titok. Nincs új NuGet-függőség.

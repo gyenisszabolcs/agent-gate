@@ -3,7 +3,7 @@ using Microsoft.Extensions.Options;
 namespace AgentGate.Policy;
 
 /// <summary>
-/// Önálló vészleállítási szűrő; még nincs az éles végrehajtási láncba kötve.
+/// A vészleállítás közös döntése; a monitoradapter és a fájlos auditkapu ugyanazt a szabályt használja.
 /// </summary>
 public sealed class KillSwitchPolicy
 {
@@ -30,11 +30,14 @@ public sealed class KillSwitchPolicy
             // A forrás olvasási, kötési vagy validálási hibája nem tarthatja nyitva a kapcsolót.
             enabled = true;
         }
-        return level switch
-        {
-            RiskLevel.Read => true,
-            RiskLevel.Control or RiskLevel.SensitiveControl or RiskLevel.Configuration or RiskLevel.System => !enabled,
-            _ => false
-        };
+        return IsAllowed(level, enabled);
     }
+
+    /// <summary>A közös döntés friss fájlállapottal és a korábbi monitoradapterrel is azonos.</summary>
+    public static bool IsAllowed(RiskLevel level, bool enabled) => level switch
+    {
+        RiskLevel.Read => true,
+        RiskLevel.Control or RiskLevel.SensitiveControl or RiskLevel.Configuration or RiskLevel.System => !enabled,
+        _ => false
+    };
 }
