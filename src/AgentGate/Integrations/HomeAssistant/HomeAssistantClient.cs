@@ -60,6 +60,11 @@ public sealed class HomeAssistantClient : IDisposable
         return state;
     }
 
+    public bool IsDomainAllowed(string? domain) => domain is { Length: > 0 and <= 255 } &&
+        Regex.IsMatch(domain, @"\A[a-z][a-z0-9_]*\z", RegexOptions.CultureInvariant) && domains.Contains(domain);
+
+    public bool IsEntityAllowed(string? entityId) => IsAllowed(entityId);
+
     private bool IsAllowed(string? entityId) => entityId is not null && entityId.Length <= 255 &&
         Regex.IsMatch(entityId, @"\A[a-z0-9_]+\.[a-z0-9_]+\z", RegexOptions.CultureInvariant) &&
         domains.Contains(entityId[..entityId.IndexOf('.')]);
@@ -78,7 +83,11 @@ public sealed class HomeAssistantClient : IDisposable
         if (!TryString(element, "entity_id", out var id) || !TryString(element, "state", out var state) ||
             !element.TryGetProperty("attributes", out var attributes) || attributes.ValueKind != JsonValueKind.Object)
             throw InvalidResponse();
-        return new HomeAssistantState(id, state, attributes.Clone());
+        var lastChanged = TryString(element, "last_changed", out var timestamp) &&
+            Regex.IsMatch(timestamp, @"\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,7})?(?:Z|[+-][0-9]{2}:[0-9]{2})\z", RegexOptions.CultureInvariant) &&
+            DateTimeOffset.TryParse(timestamp, System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.None, out _) ? timestamp : null;
+        return new HomeAssistantState(id, state, attributes.Clone(), lastChanged);
     }
 
     private static HomeAssistantException InvalidResponse() => new("A Home Assistant válasz érvénytelen.");

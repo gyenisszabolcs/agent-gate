@@ -46,10 +46,19 @@ public static class HomeAssistantServiceCollectionExtensions
 {
     public static IServiceCollection AddHomeAssistantClient(this IServiceCollection services, IConfiguration configuration)
     {
+        // A gyökér gyerekei a megadott üres/null JSON-szakaszt is megőrzik.
+        if (!configuration.GetChildren().Any(child => string.Equals(child.Key, "HomeAssistant", StringComparison.OrdinalIgnoreCase)))
+            return services;
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<HomeAssistantOptions>, HomeAssistantOptionsValidator>());
         services.AddOptions<HomeAssistantOptions>().Configure(options =>
         {
             var section = configuration.GetSection("HomeAssistant");
+            var scalarNames = new HashSet<string>(["BaseUrl", "TokenSecretId", "AllowHttp", "Timeout"], StringComparer.OrdinalIgnoreCase);
+            if (section.Value is not null || section.GetChildren().Any(child =>
+                    scalarNames.Contains(child.Key) && (child.Value is null || child.GetChildren().Any())) ||
+                section.GetSection("DomainAllowlist").Value is not null)
+                throw new OptionsValidationException(Options.DefaultName, typeof(HomeAssistantOptions),
+                    [HomeAssistantOptionsValidator.SafeMessage]);
             options.BaseUrl = section["BaseUrl"];
             var allowHttp = section["AllowHttp"];
             if (allowHttp is not null)
