@@ -3,7 +3,8 @@ namespace AgentGate.Secrets;
 public sealed class BitwardenSecretProvider(
     IBitwardenSecretClient? client = null,
     Func<string, string?>? environmentReader = null,
-    string credentialFileName = "bitwarden-access-token") : ISecretProvider
+    string credentialFileName = "bitwarden-access-token",
+    bool credentialOnly = false) : ISecretProvider
 {
     private readonly Func<string, string?> _environmentReader = environmentReader ?? Environment.GetEnvironmentVariable;
     private readonly IBitwardenSecretClient _client = client ?? new BitwardenSdkSecretClient(environmentReader ?? Environment.GetEnvironmentVariable);
@@ -45,7 +46,7 @@ public sealed class BitwardenSecretProvider(
             }
 
             accessToken = directory is null
-                ? _environmentReader(AccessTokenEnvironmentVariable)
+                ? (credentialOnly ? null : _environmentReader(AccessTokenEnvironmentVariable))
                 : await File.ReadAllTextAsync(Path.Combine(directory, credentialFileName), cancellationToken).ConfigureAwait(false);
         }
         catch (Exception) when (cancellationToken.IsCancellationRequested)

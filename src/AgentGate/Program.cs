@@ -2,6 +2,7 @@ using AgentGate.Audit;
 using Microsoft.Extensions.Options;
 using AgentGate.Policy;
 using AgentGate.Tools;
+using AgentGate.Secrets;
 
 var builder = WebApplication.CreateBuilder(args);
 // Az SDK 2.4.0 a filteren kívül nyers eszköznevet, Trace szinten teljes üzenettartalmat naplóz.
@@ -19,6 +20,8 @@ builder.Services.PostConfigure<LoggerFilterOptions>(options =>
     }
     options.Rules.Add(new LoggerFilterRule(null, "ModelContextProtocol.Server.", LogLevel.None, null));
 });
+builder.Services.AddHostedService<SecretSelfTestService>();
+builder.Services.AddSingleton<ISecretProvider>(_ => new BitwardenSecretProvider(credentialOnly: true));
 builder.Services.Configure<AuditOptions>(builder.Configuration.GetSection("Audit"));
 builder.Services.AddSingleton<IAuditStore>(services => new SqliteAuditStore(
     services.GetRequiredService<IOptions<AuditOptions>>().Value.DatabasePath));

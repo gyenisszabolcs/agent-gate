@@ -22,6 +22,7 @@ internal sealed class McpTestApplication(string? token, Action<IServiceCollectio
         }
         builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(new Dictionary<string, string?>
         {
+            ["Secrets:SelfTestSecretId"] = null,
             ["KillSwitch:Path"] = KillSwitchPath,
             ["Audit:DatabasePath"] = AuditPath,
             ["Audit:Caller"] = "test-caller"
