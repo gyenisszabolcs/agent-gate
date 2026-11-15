@@ -22,6 +22,10 @@ public sealed class BitwardenSecretProviderTests
         });
         ISecretProvider provider = new BitwardenSecretProvider(client, name =>
         {
+            if (name == "CREDENTIALS_DIRECTORY")
+            {
+                return null;
+            }
             Assert.Equal("AGENT_GATE_BITWARDEN_ACCESS_TOKEN", name);
             return accessToken;
         });
@@ -39,7 +43,7 @@ public sealed class BitwardenSecretProviderTests
     public async Task GetSecretAsync_RejectsMissingTokenWithoutCallingProvider(string? accessToken)
     {
         var client = new FakeClient((_, _, _) => throw new InvalidOperationException());
-        var provider = new BitwardenSecretProvider(client, _ => accessToken);
+        var provider = new BitwardenSecretProvider(client, name => name == "CREDENTIALS_DIRECTORY" ? null : accessToken);
 
         var error = await Assert.ThrowsAsync<SecretProviderException>(() => provider.GetSecretAsync(Guid.NewGuid()));
 
@@ -54,7 +58,7 @@ public sealed class BitwardenSecretProviderTests
     {
         var accessToken = NewSecret();
         var client = new FakeClient((_, _, _) => Task.FromResult<string?>(null));
-        var provider = new BitwardenSecretProvider(client, _ => accessToken);
+        var provider = new BitwardenSecretProvider(client, name => name == "CREDENTIALS_DIRECTORY" ? null : accessToken);
 
         var error = await Record.ExceptionAsync(() => provider.GetSecretAsync(Guid.NewGuid()));
 
@@ -75,7 +79,7 @@ public sealed class BitwardenSecretProviderTests
             ? new UnauthorizedAccessException(sensitiveMessage, new Exception(value))
             : new InvalidOperationException(sensitiveMessage, new Exception(value));
         var client = new FakeClient((_, _, _) => Task.FromException<string?>(providerError));
-        var provider = new BitwardenSecretProvider(client, _ => accessToken);
+        var provider = new BitwardenSecretProvider(client, name => name == "CREDENTIALS_DIRECTORY" ? null : accessToken);
 
         var error = await Record.ExceptionAsync(() => provider.GetSecretAsync(Guid.NewGuid()));
 
@@ -126,7 +130,7 @@ public sealed class BitwardenSecretProviderTests
                 _ => throw new InvalidOperationException(accessToken + value, new Exception(value))
             };
         });
-        var provider = new BitwardenSecretProvider(client, _ => accessToken);
+        var provider = new BitwardenSecretProvider(client, name => name == "CREDENTIALS_DIRECTORY" ? null : accessToken);
 
         var error = await Record.ExceptionAsync(() => provider.GetSecretAsync(Guid.NewGuid(), cancellation.Token));
 
@@ -189,6 +193,7 @@ public sealed class BitwardenSecretProviderTests
     {
         var accessToken = NewSecret();
         ISecretProvider provider = new BitwardenSecretProvider(environmentReader: name =>
+            name == "CREDENTIALS_DIRECTORY" ? null :
             name == BitwardenSecretProvider.AccessTokenEnvironmentVariable ? accessToken : loggingFilter);
 
         var error = await Record.ExceptionAsync(() => provider.GetSecretAsync(Guid.NewGuid()));
