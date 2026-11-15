@@ -316,7 +316,8 @@ public sealed class McpAuditTests
             services.AddMcpServer().WithTools(probe);
         })
         { InitializeKillSwitch = false };
-        Assert.Null(factory.Services.GetService<AgentGate.Secrets.ISecretProvider>());
+        Assert.IsType<AgentGate.Secrets.BitwardenSecretProvider>(factory.Services.GetRequiredService<AgentGate.Secrets.ISecretProvider>());
+        Assert.Null(factory.Services.GetService<AgentGate.Integrations.HomeAssistant.HomeAssistantClient>());
         using var read = await CallAsync(factory, "count", new { });
         Assert.False(IsError(read));
         using var write = await CallAsync(factory, "failure", new { });

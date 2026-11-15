@@ -13,12 +13,14 @@ public sealed class SystemdCredentialTests : IDisposable
 
     public SystemdCredentialTests() => Directory.CreateDirectory(_directory);
 
-    [Fact]
-    public async Task CredentialTakesPriorityWithoutReadingEnvironmentToken()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CredentialTakesPriorityWithoutReadingEnvironmentToken(bool credentialOnly)
     {
         await File.WriteAllTextAsync(Path.Combine(_directory, "bitwarden-access-token"), _token);
         var client = new FakeClient(_token);
-        var provider = new BitwardenSecretProvider(client, ReadEnvironment);
+        var provider = new BitwardenSecretProvider(client, ReadEnvironment, credentialOnly: credentialOnly);
 
         var error = await Record.ExceptionAsync(() => provider.GetSecretAsync(Guid.NewGuid()));
 
@@ -283,6 +285,23 @@ public sealed class SystemdCredentialTests : IDisposable
         Assert.True(!error.ToString().Contains(_directory, StringComparison.Ordinal), "A fájlútvonal kiszivárgott.");
         Assert.True(client.Calls == 0, "Hiányzó fájl mellett SDK-hívás történt.");
         Assert.True(!_environmentReads.Contains(BitwardenSecretProvider.AccessTokenEnvironmentVariable), "I/O-hiba után env-token olvasás történt.");
+    }
+
+    [Fact]
+    public async Task CredentialOnlyRejectsMissingRootWithoutReadingDevelopmentToken()
+    {
+        var client = new FakeClient(_envToken);
+        string? Read(string name)
+        {
+            _environmentReads.Add(name);
+            return name == "CREDENTIALS_DIRECTORY" ? null : _envToken;
+        }
+        var provider = new BitwardenSecretProvider(client, Read, credentialOnly: true);
+
+        var error = await Record.ExceptionAsync(() => provider.GetSecretAsync(Guid.NewGuid()));
+        Assert.True(error is SecretProviderException { Error: SecretProviderError.MissingAccessToken },
+            "A hiányzó gépi token hibatípusa elveszett.");
+        await AssertRejected(provider, client);
     }
 
     private async Task AssertRejected(BitwardenSecretProvider provider, FakeClient client)
