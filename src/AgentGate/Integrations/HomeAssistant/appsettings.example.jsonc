@@ -1,0 +1,14 @@
+{
+  "HomeAssistant": {
+    "BaseUrl": "https://ha.example/",
+    // Alapérték false. HTTP csak true és kanonikus IPv4-literál mellett:
+    // 10.0.0.0/8, 172.16.0.0/12 vagy 192.168.0.0/16; hostnév/DNS-kivétel nincs.
+    // HTTP-n a Bearer token lehallgatható, a forgalom módosítható; a privát cím nem titkosítás.
+    // Lehetőleg maradjon HTTPS; true esetén induláskori Warning HTTPS alapcímnél is megjelenik.
+    "AllowHttp": false,
+    // Nem valódi, eszközzel generált példa-GUID: HA hosszú élettartamú tokent tároló titok GUID-hivatkozása.
+    "TokenSecretId": "7da7370c-49d2-44da-803a-441c7b41b0a8",
+    "DomainAllowlist": ["sensor", "light", "camera"],
+    "Timeout": "00:00:10"
+  }
+}
