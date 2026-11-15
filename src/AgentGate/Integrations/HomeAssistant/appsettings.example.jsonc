@@ -8,7 +8,7 @@
     "AllowHttp": false,
     // Nem valódi, eszközzel generált példa-GUID: HA hosszú élettartamú tokent tároló titok GUID-hivatkozása.
     "TokenSecretId": "7da7370c-49d2-44da-803a-441c7b41b0a8",
-    "DomainAllowlist": ["sensor", "light", "camera"],
+    "DomainAllowlist": ["light", "switch", "sensor", "binary_sensor", "climate", "cover", "weather", "sun", "scene", "input_boolean", "person", "zone"],
     "Timeout": "00:00:10"
   }
 }

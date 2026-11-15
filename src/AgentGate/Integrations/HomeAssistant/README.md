@@ -1,6 +1,6 @@
-# Home Assistant olvasási kliens
+# Home Assistant olvasási kliens és MCP-eszközök
 
-Önálló modul, MCP-eszköz és főprogrambekötés nélkül. Pontosan három publikus olvasás:
+A főprogramba feltételesen bekötött kliens három olvasási művelete:
 
 - `GetConfigAsync(ct)` → `GET /api/config`, szűrt `HomeAssistantConfig.Data` JSON objektum.
 - `GetStatesAsync(ct)` → `GET /api/states`, az összes engedélyezett entitás `HomeAssistantState` DTO-ja.
@@ -10,7 +10,7 @@ Nincs általános HTTP-végpont, írás, titoknév szerinti keresés vagy közve
 
 ## Regisztráció és konfiguráció
 
-A modul `AddHomeAssistantClient(IServiceCollection, IConfiguration)` bővítése regisztrálja a klienst és a `HomeAssistant` szakasz beállításait, `ValidateOnStart` ellenőrzéssel. Az `ISecretProvider` regisztrációja a befogadó alkalmazás feladata. Induláskor nincs HTTP és nincs titoklekérés. A beállítások indulási pillanatképet alkotnak, nincs élő újratöltés.
+A főprogram meghívja az `AddHomeAssistantClient(IServiceCollection, IConfiguration)` bővítést. Teljesen hiányzó `HomeAssistant` szakasznál nincs kliens, HA-options-validálás vagy HTTP-figyelmeztető szolgáltatás. Megadott üres/null/skalár/hiányos/hibás szakasz fix „A Home Assistant konfiguráció érvénytelen.” indulási hibát ad, érték-visszhang nélkül. A megadott szakasz `ValidateOnStart` ellenőrzést kap. Az `ISecretProvider` regisztrációja a befogadó alkalmazás feladata. Induláskor nincs HTTP és nincs titoklekérés. A beállítások indulási pillanatképet alkotnak, nincs élő újratöltés.
 
 Lásd az `appsettings.example.jsonc` megjegyzéses mintát. A GUID eszközzel generált, nem valódi titokhivatkozás; nem tartalmaz tokent. A `TokenSecretId` a biztonságos hibakezelés miatt szöveges opció, de csak nem üres GUID fogadható el, és a szolgáltató már `Guid` értéket és `CancellationToken`-t kap. Hibás/hiányzó/üres GUID fix üzenetű `OptionsValidationException`-t okoz. A kézi konstruktor is ellenőriz.
 
@@ -21,7 +21,30 @@ Lásd az `appsettings.example.jsonc` megjegyzéses mintát. A GUID eszközzel ge
 - `Timeout`: alapérték 10 másodperc, pozitív és legfeljebb 5 perc; a titoklekérést, HTTP-t és a választest olvasását is lefedi. Hibás szöveges időkorlát is fix biztonságos konfigurációs hibát ad.
 - Entitásforma: `\A[a-z0-9_]+\.[a-z0-9_]+\z`, legfeljebb 255 karakter. Unicode, útvonalelválasztó, query, fragment, százalékos kódolás, whitespace nem megengedett. Az egyedi válasz azonosítójának egyeznie kell a kérttel.
 
-A bővítő metódust a befogadó alkalmazásnak kell meghívnia. A modul nem köti be magát automatikusan a főprogramba, és nem regisztrál MCP-eszközt vagy vészleállítót.
+Új konfigurációs kulcs nincs. A meglévő pontos nevek: `HomeAssistant:BaseUrl`, `HomeAssistant:AllowHttp`, `HomeAssistant:TokenSecretId`, `HomeAssistant:DomainAllowlist`, `HomeAssistant:Timeout`; szerepük fent olvasható. A mintában pontosan `light`, `switch`, `sensor`, `binary_sensor`, `climate`, `cover`, `weather`, `sun`, `scene`, `input_boolean`, `person`, `zone` szerepel, ebben a sorrendben; nincs `device_tracker`. Ez csak minta, nem automatikus vagy éles engedélyezés.
+
+A `HomeAssistant:TokenSecretId` utalhat ugyanarra a Bitwarden-titokra, mint a különálló `HomeAssistantApproval:TokenSecretId`. Nincs titokmásolás vagy inline token: a tokent kizárólag a meglévő `ISecretProvider` kéri le futásidőben. Az olvasási modul hiánya nem kapcsolja ki a jóváhagyási csatorna vagy a titokönteszt saját beállításait.
+
+## MCP-szerződés
+
+Mindhárom eszköz mindig regisztrált, explicit Read kockázattal és read-only jelöléssel, a közös tartós auditkapun át. Hiányzó kliensnél fix `GateToolException`: „A Home Assistant nincs beállítva.” Hibás konfigurációt nem álcázunk hiánynak. A provider-/HTTP-/válaszhiba és timeout toolszinten fix „A Home Assistant lekérés sikertelen.”; a hívói megszakítás továbbadódik.
+
+- `ha_list_states(domain?)`: az engedélyezőlista és az opcionális pontos domain metszete, majd a helyadatgyanús entitások kihagyása, ordinális `entity_id` rendezés és **rögzített 100-as limit**. A válasz `items`, `returned_count`, `truncated`; utóbbi pontosan 100-nál több kiadható találatnál igaz. Csonkoláskor szűkíts domain szerint; nincs lapozás vagy limitkonfiguráció. Tiltott/hibás domainnél nincs titok- vagy HTTP-hívás.
+- Listaelem: csak `entity_id`, `state`, opcionális string `friendly_name`, `unit_of_measurement`, valamint opcionális `last_changed`. Az utóbbi a HA-válasz ellenőrzött ISO-időbélyege (teljes dátum+idő+másodperc, opcionális 1–7 törtmásodperc, Z vagy numerikus offset), nem a lekérés ideje; hiányzó/hibás értéket nem pótolunk.
+- `ha_get_state(entity_id)`: ugyanezek a mezők és `attributes`. Csak öt pontos nevű, string típusú attribútum adható ki: `friendly_name`, `unit_of_measurement`, `device_class`, `state_class`, `icon`. Ismeretlen mező, objektum, tömb, szám, boolean, null kimarad. Tiltott/hibás azonosítónál nincs I/O; helyadatgyanús válasznál fix elutasítás van.
+- `ha_get_config`: csak string `version`, `time_zone`, `language`, `location_name` és a szűrt `unit_system` objektum. Utóbbiban csak string `length`, `mass`, `temperature`, `volume`, `pressure`, `wind_speed`, `accumulated_precipitation` engedélyezett. Hiányzó/rossz típusú érték kimarad; üres egységrendszer megmaradhat. Koordináta, elevation, URL, könyvtárlista, komponenslista és minden más mező kizárt.
+
+Csak a tényleges bemenetnevek auditálhatók: a listánál `domain`, az egyedi olvasásnál `entity_id`, a confignál egyik sem. Nincs válasz, nyers attribútum vagy konfiguráció az auditparaméterekben. A strukturált MCP-válasz közvetlenül a fenti objektum; a szöveges tartalom ugyanennek a JSON-ábrázolása.
+
+### Helyadatkiadási határ
+
+Minden domainre, így `person` és `zone` entitásokra is ugyanaz a zárt projekció vonatkozik. Az ismeretlen attribútumokat teljes értékükkel eldobjuk, így azok beágyazott objektumai/tömbjei sem kerülnek ki. Nincs általános attribútumfa-visszaadás.
+
+A helyadatgyanús nevek vizsgálata csak ASCII betű/szám megtartásával és invariant kisbetűsítéssel történik. A normalizált névben bárhol szereplő `latitude`, `longitude`, `gps`, `coordinate`, `altitude`, `elevation`, `course`, `speed`, `radius` tiltó jelzés (prefix/suffix esetén is). Példák: `GPS_accuracy`, `gps-accuracy`, `GpsAccuracy` → `gpsaccuracy`. Az attribútum pozitív listáján egyébként sem szerepelnek ezek; `wind_speed` mérési attribútum is kimarad. A config `unit_system.wind_speed` string egységcímkéje viszont megengedett, mert nem helymérés.
+
+Entitásazonosítóban helyadatgyanús név, illetve a `state` vagy az öt engedélyezett szöveges attribútum bármelyikében felismert helyadatjelzés az egész entitást kizárja: listából kimarad, részletes olvasásnál „Az entitás helyadatgyanús adatot tartalmaz.”. Vizsgált alakok: a fenti normalizált névrészletek, kis-/nagybetűfüggetlen `geo:`, számot követő fokjel (DMS-alak is), két előjeles vagy előjel nélküli, legfeljebb három egészjegyű szám vessző/pontosvessző/perjel elválasztóval, opcionális ponttal írt törtrésszel és whitespace-szel. Példák: `47.123, 19.456`, `geo:47.123;19.456`, `latitude=47.123 longitude=19.456`, `47° 12′ 3″ N 19° 4′ 5″ E`. A tizedesponttal írt számpár whitespace-elválasztással is tiltott; a szám előtti/utáni `N`, `S`, `E`, `W` irányjel és a `lat`, `lon`, `lng` címke kettősponttal vagy egyenlőségjellel szintén jelzés (kis-/nagybetűfüggetlenül). Tesztelt példák: `+47.123 -19.456`, `N 47.123 E 19.456`, `47.123N 19.456E`, `lat=47.123 lon=19.456`. A `unit_of_measurement` pontos `°`, `deg`, `degree`, `degrees`, `rad` címkéje is kizáró jelzés (trim és kisbetűsítés után). Ez a név/state/friendly_name/unit együttes ellenőrzése, nem kizárólag kulcsszűrés. Config engedélyezett szövegmezőjéből a felismert helyadatgyanús érték kimarad.
+
+A szűrés konzervatív: ártalmatlan név vagy szöveg is kieshet (például speed nevű szenzor). **Nem garantál tetszőleges ismeretlen elnevezésű, kódolt vagy obfuszkált szabad szöveg szemantikus GPS-felismerését**; önmagában egy jelöletlen szám nem bizonyítható koordinátának. Új adatmodell/formátum csak külön tesztelt nem-helyadat szerződéssel bővítheti a pozitív listát.
 
 ## Titok- és hálózati határok
 
