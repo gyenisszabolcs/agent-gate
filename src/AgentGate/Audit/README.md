@@ -33,13 +33,19 @@ Ezek az alapértékek; a szokásos .NET konfiguráció, például `Audit__Databa
 
 Az `IAuditStore.BeginAsync` GUID-azonosítóval, UTC időponttal, hívóval, eszközzel, kockázattal és titokmentes paraméterekkel `Started` sort tartósít. Ennek sikere előtt az eszközkód nem futhat. Írási hiba biztonságos eszközhibát ad, végrehajtás nélkül.
 
-A `CompleteAsync` csak a megfelelő azonosítójú `Started` sort zárhatja `Succeeded`, `Failed` vagy `Cancelled` állapotba, nemnegatív, véges időtartammal és opcionális titokmentes hibával. Az időtartam a kezdőbejegyzés utáni végrehajtási szakaszt méri, a lezáró adatbázisírást nem. Ismételt vagy nem létező lezárás elutasított.
+A `CompleteAsync` csak a megfelelő azonosítójú `Started` sort zárhatja `Succeeded`, `Failed`, `Cancelled` vagy jóváhagyásra váró `Pending` állapotba, nemnegatív, véges időtartammal és opcionális titokmentes hibával. Az időtartam a kezdőbejegyzés utáni szakaszt méri, a lezáró adatbázisírást nem; Pending esetén nem a későbbi emberi várakozás vagy végrehajtás ideje. Ismételt vagy nem létező lezárás elutasított.
 
 Lezárási hiba nem ad teljes sikert, és nem görgeti vissza a már lefutott eszközt: a sor `Started` állapotban marad. A kliens megszakítását az eszköz megkapja; a lezárás külön, öt másodperces határidejű tokent használ. Ez nem folyamatkilövési vagy azonnali natív I/O-megszakítási garancia.
 
 Ismeretlen vagy hiányos metaadatú hívásnál nincs eszközvégrehajtás, de írható tárolónál `Failed` elutasítási audit készül. Az ismeretlen név fix marker, az argumentumok kimaradnak. Hiányzó/érvénytelen kockázatnál a `Forbidden` elutasítási besorolás, nem egy ismeretlen eszköz feltételezett üzleti kockázata. Érvényes kockázat hiányzó engedélyezőlistánál megmarad.
 
 ## Tároló API és kompatibilitás
+
+A külön `CompletePendingAsync(callId, state, sanitizedError, cancellationToken)` kizárólag a pontosan egyező `CallId`-jú, még `Pending` eredeti sort zárja `Rejected`, `Expired`, `Failed` vagy sikeres végrehajtásnál `Succeeded` állapotba. Az SQL feltételes frissítése párhuzamos lezárásból is csak egyet fogad el; hiányzó, `Started` vagy már lezárt sor érintetlen marad. A hívó, tool, eredeti paraméterek, időpont és korábbi időtartam nem változik. A `CompleteAsync` egyszeri Started-védelme változatlan.
+
+A teljes jóváhagyási `requestId` az eredeti `AuditCall.CallId`. Az `approval_lifecycle` sorok `event` mezője `request_sent`, `approved`, `rejected`, `expired`, `executed` vagy `failed`; a korábbi `phase` mező (`decision`, `outcome` is) megmarad. Az esemény a megtörtént lépést nevezi meg, a `state` a kapu az íráskori pillanatképe: a döntés auditálása még a végrehajtás előtt történik. Az `approved` nem végrehajtási siker, a `request_sent` csak visszaigazolt csatornaküldés, nem telefonos kézbesítési bizonyíték. A külön execution-audit is teljes `requestId`-t tartalmaz.
+
+Auditírási hiba esetén nincs garantált tartós végállapot: a korábbi `Started` vagy `Pending` sor megmaradhat. A kapu rögzített hibát jelez; a külön `failed` esemény írása is meghiúsulhat. Ez nem a hibás írás vagy a művelet újrapróbálása, és nincs rollback. Új sémamigráció, történeti Pending-sorok átírása és auditból helyreállított végrehajtási engedély nincs. Az `AuditEntries` és az `AuditCalls` meglévő sémája változatlan; új konfigurációs kulcs vagy NuGet-függőség nincs.
 
 - `new SqliteAuditStore(databasePath)`: teljes fájlútvonal meglévő szülőkönyvtárban; nincs relatív, URI- vagy memóriatároló. A konstruktor nem hoz létre fájlt/könyvtárat.
 - Az MCP-hívásállapot az `AuditCalls` táblában van. A régi `AppendAsync`/`ReadAllAsync` API és `SanitizedAuditEntry` továbbra is az `AuditEntries` táblát használja, nem az új hívássorokat.

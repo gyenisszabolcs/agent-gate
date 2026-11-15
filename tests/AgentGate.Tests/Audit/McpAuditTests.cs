@@ -951,6 +951,8 @@ public sealed class McpAuditTests
 
     private sealed class RecordingStore : IAuditStore
     {
+        public Task CompletePendingAsync(Guid callId, string state, string? sanitizedError, CancellationToken cancellationToken) =>
+            CompleteAsync(callId, state, 0, sanitizedError, cancellationToken);
         public List<AuditCall> Calls { get; } = [];
         public string? BeginError { get; init; }
         public string? CompleteError { get; init; }

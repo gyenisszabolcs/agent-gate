@@ -134,11 +134,11 @@ public sealed class McpAuditFilter(IServiceProvider services, IOptions<AuditOpti
         catch (Exception)
         {
             if (pendingRequestId is { } failedId)
-                services.GetRequiredService<AgentGate.Approval.ApprovalGate>().ConfirmRequest(failedId, false);
+                await services.GetRequiredService<AgentGate.Approval.ApprovalGate>().ConfirmRequestAsync(failedId, false);
             return Error("Az audit lezárása sikertelen; a kezdőbejegyzés befejezetlen. Ez nem jelenti a már végrehajtott művelet visszagörgetését.");
         }
         if (pendingRequestId is { } committedId)
-            services.GetRequiredService<AgentGate.Approval.ApprovalGate>().ConfirmRequest(committedId, state == "Pending");
+            await services.GetRequiredService<AgentGate.Approval.ApprovalGate>().ConfirmRequestAsync(committedId, state == "Pending");
         return result;
     }
 
