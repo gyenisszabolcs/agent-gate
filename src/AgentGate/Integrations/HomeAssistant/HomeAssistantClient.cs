@@ -9,6 +9,7 @@ namespace AgentGate.Integrations.HomeAssistant;
 public sealed class HomeAssistantClient : IDisposable
 {
     private readonly HttpClient http;
+    private readonly TimeSpan timeout;
     private readonly ISecretProvider secrets;
     private readonly Guid secretId;
     private readonly HashSet<string> domains;
@@ -25,7 +26,9 @@ public sealed class HomeAssistantClient : IDisposable
         this.secrets = secrets;
         domains = new HashSet<string>(options.Value.DomainAllowlist ?? [], StringComparer.Ordinal);
         secretId = Guid.Parse(options.Value.TokenSecretId!);
-        http = new HttpClient(handler) { BaseAddress = new Uri(options.Value.BaseUrl!), Timeout = options.Value.Timeout };
+        timeout = options.Value.Timeout;
+        // Egyetlen határidő fedi a titoklekérést, a HTTP-hívást és a választest olvasását.
+        http = new HttpClient(handler) { BaseAddress = new Uri(options.Value.BaseUrl!), Timeout = System.Threading.Timeout.InfiniteTimeSpan };
     }
 
     public async Task<HomeAssistantConfig> GetConfigAsync(CancellationToken cancellationToken = default)
@@ -83,7 +86,7 @@ public sealed class HomeAssistantClient : IDisposable
     private async Task<JsonElement> ReadAsync(string path, CancellationToken cancellationToken)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(http.Timeout);
+        deadline.CancelAfter(timeout);
         var ct = deadline.Token;
         try
         {

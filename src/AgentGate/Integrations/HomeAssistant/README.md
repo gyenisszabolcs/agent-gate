@@ -1,4 +1,4 @@
-# Home Assistant olvasási kliens (#20)
+# Home Assistant olvasási kliens
 
 Önálló modul, MCP-eszköz és főprogrambekötés nélkül. Pontosan három publikus olvasás:
 
@@ -14,12 +14,14 @@ A modul `AddHomeAssistantClient(IServiceCollection, IConfiguration)` bővítése
 
 Lásd az `appsettings.example.jsonc` megjegyzéses mintát. A GUID eszközzel generált, nem valódi titokhivatkozás; nem tartalmaz tokent. A `TokenSecretId` a biztonságos hibakezelés miatt szöveges opció, de csak nem üres GUID fogadható el, és a szolgáltató már `Guid` értéket és `CancellationToken`-t kap. Hibás/hiányzó/üres GUID fix üzenetű `OptionsValidationException`-t okoz. A kézi konstruktor is ellenőriz.
 
-- `BaseUrl`: kizárólag HTTPS origin, root útvonallal; nincs userinfo, query, fragment vagy útvonalprefix. A tanúsítvány-ellenőrzést nem kerüljük meg. A sima HTTP szándékosan nem támogatott, a Bearer token miatt.
+- `BaseUrl`: alapból kizárólag HTTPS origin, root útvonallal; nincs userinfo, query, fragment vagy útvonalprefix. A tanúsítvány-ellenőrzést nem kerüljük meg. HTTPS esetén az alábbi HTTP-kivétel nem változtatja meg a korábbi címelfogadást.
+- `AllowHttp`: alapérték **false**. Csak explicit `true` mellett engedélyezett HTTP, kizárólag kanonikus, négyrészes decimális IPv4-literállal a `10.0.0.0/8`, `172.16.0.0/12` vagy `192.168.0.0/16` tartományban (például `http://192.168.1.2:8123/`). Hostnévhez nincs kivétel és nincs DNS-feloldás; public, loopback, link-local, CGNAT, IPv6 és IPv4-mapped IPv6 HTTP-cím tiltott. Rövidített, hexadecimális, oktális vagy vezető nullás IPv4-alak sem megengedett. A többi origin-korlát HTTP-n is változatlan. Hibás boolean szöveg fix konfigurációs hibával megállítja az indulást, HTTPS mellett is.
+- **Titkosítatlan kapcsolat kockázata:** HTTP-n a Bearer token és a forgalom lehallgatható/módosítható; a privát IP önmagában nem ad titkosítást vagy szerverhitelesítést. Lehetőleg HTTPS-t használj. Az extension által regisztrált `IHostedService` engedélyezett `AllowHttp` esetén induláskor konstans magyar `Warning` üzenetet naplóz, HTTPS alapcím mellett is, URL, token és titokazonosító nélkül. `false` vagy hiányzó flag esetén nincs ilyen figyelmeztetés; a közvetlen konstruktor nem indít hostszolgáltatást.
 - `DomainAllowlist`: pontos, kisbetűs ASCII domainnevek; nincs wildcard. Hiányzó vagy üres lista **deny all**. Egyedi tiltott/malformed entitásnál még titoklekérés sem történik; listából minden ilyen entitás kimarad.
 - `Timeout`: alapérték 10 másodperc, pozitív és legfeljebb 5 perc; a titoklekérést, HTTP-t és a választest olvasását is lefedi. Hibás szöveges időkorlát is fix biztonságos konfigurációs hibát ad.
 - Entitásforma: `\A[a-z0-9_]+\.[a-z0-9_]+\z`, legfeljebb 255 karakter. Unicode, útvonalelválasztó, query, fragment, százalékos kódolás, whitespace nem megengedett. Az egyedi válasz azonosítójának egyeznie kell a kérttel.
 
-A `Program.cs` kifejezetten változatlan. A valódi gate bekötése a #18 merge után külön kis feladat lesz; ez tudatos későbbi scope, nem a modul blokkolója. A #16 vészleállítót ez a modul nem használja és nem módosítja.
+A bővítő metódust a befogadó alkalmazásnak kell meghívnia. A modul nem köti be magát automatikusan a főprogramba, és nem regisztrál MCP-eszközt vagy vészleállítót.
 
 ## Titok- és hálózati határok
 
@@ -36,23 +38,3 @@ A `HomeAssistantJsonSanitizer` külön strukturális JSON-szűrő; **nem** a `Se
 Konzervatívan egészben takar **minden** `?`, `#` vagy `@` karaktert tartalmazó szövegértéket. Így a szokásos abszolút/relatív URL-ek query tokenje, kódolt query-kulcsa, userinfo része és fragmentje nem kerül ki; ennek ára, hogy ártalmatlan query URL, e-mail vagy ilyen írásjelű szöveg is elveszhet.
 
 Ez nem általános DLP-garancia: ismeretlen nevű szabad szövegben, más kódolásban, bináris adatban vagy számértékben rejtett ismeretlen titkot nem tud megbízhatóan felismerni. Az engedélyezett HA-domainek és integrációk adatmodellje továbbra is bizalmi határ; új érzékeny attribútumnév új szűrési szabályt és tesztet igényel.
-
-## Ellenőrzés és átadás
-
-A tesztek csak fake `HttpMessageHandler`-t és fake `ISecretProvider`-t használnak; nincs valódi Home Assistant/Bitwarden elérés. A teszttitkok futásidőben generáltak, az érzékeny ellenőrzések boolean assertionnel és fix hibaüzenettel működnek, nem írják ki a titkot. Izolált hostteszt **ugyanazt** az extensiont használja hibás/üres GUID és érvényes GUID esetén.
-
-TDD RED → GREEN: hiányzó config API; domain- és entitásvédelem/listázás; sikeres JSON strukturális titokmentesítése; startup extension; biztonságos hiba/timeout/megszakítás. A RED lépések ténylegesen futtatva és a megfelelő hiányzó viselkedésen buktak.
-
-Parancsok a repository gyökeréből:
-
-```sh
-dotnet build AgentGate.sln --no-restore --nologo
-dotnet test AgentGate.sln --no-restore --nologo
-dotnet test --no-restore --filter FullyQualifiedName~HomeAssistant --nologo
-dotnet format AgentGate.sln --no-restore --verify-no-changes
-git diff --cached --check
-```
-
-Új NuGet-függőség nincs. Ellenőrzött eredmény: baseline **199/199**, teljes végső tesztfutás **262/262**, ebből új HA-teszt **63/63**, kihagyott teszt nincs. A build **0 warning / 0 error**, a teljes `dotnet format --verify-no-changes` sikeres. A saját módosítások új fájlok: `HomeAssistantClient.cs`, `HomeAssistantOptions.cs`, `HomeAssistantModels.cs`, `HomeAssistantJsonSanitizer.cs`, `HomeAssistantServiceCollectionExtensions.cs`, e README és a JSONC-minta a modulban, továbbá `tests/AgentGate.Tests/HomeAssistantClientTests.cs` és `HomeAssistantRegistrationTests.cs`.
-
-Nyitott modulkérdés nincs. A HTTPS-only és a konzervatív URL-szövegtakarás tudatos biztonsági korlát; a független review ezeket is ellenőrizze. Commit/push/PR nincs; az átvevő végzi a független biztonsági felülvizsgálatot és a PR-t. A meglévő teszt SDK `VSTEST_ARTIFACTS_DIRECTORY` fallback tájékoztatása már a baseline futásban is megjelent, nem új fordítási figyelmeztetés.

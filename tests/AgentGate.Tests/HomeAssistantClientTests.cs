@@ -10,15 +10,22 @@ namespace AgentGate.Tests;
 
 public sealed class HomeAssistantClientTests
 {
-    [Fact]
-    public async Task ConfigUsesExactGetAndRuntimeBearer()
+    [Theory]
+    [InlineData("https://ha.example/", false)]
+    [InlineData("https://ha.example/", true)]
+    [InlineData("http://10.1.2.3:8123/", true)]
+    [InlineData("http://172.16.1.2/", true)]
+    [InlineData("http://192.168.1.2/", true)]
+    public async Task ConfigUsesExactGetAndRuntimeBearer(string baseUrl, bool allowHttp)
     {
         var secrets = new FakeSecrets();
         var options = ValidOptions();
+        options.BaseUrl = baseUrl;
+        options.AllowHttp = allowHttp;
         var handler = new FakeHandler((request, ct) =>
         {
             Assert.Equal(HttpMethod.Get, request.Method);
-            Assert.Equal("https://ha.example/api/config", request.RequestUri!.AbsoluteUri);
+            Assert.Equal(baseUrl + "api/config", request.RequestUri!.AbsoluteUri);
             Assert.Equal("Bearer", request.Headers.Authorization?.Scheme);
             Assert.True(request.Headers.Authorization?.Parameter == secrets.Token, "A Bearer továbbítás hibás.");
             Assert.True(ct.CanBeCanceled);
@@ -30,6 +37,27 @@ public sealed class HomeAssistantClientTests
         Assert.Equal(Guid.Parse(options.TokenSecretId!), secrets.RequestedId);
         Assert.True(secrets.CancellationToken.CanBeCanceled);
         Assert.Equal(1, handler.Calls);
+    }
+
+    [Theory]
+    [InlineData("http://192.168.1.2/", false)]
+    [InlineData("http://ha.example/", true)]
+    [InlineData("http://8.8.8.8/", true)]
+    [InlineData("http://[::ffff:10.0.0.1]/", true)]
+    public void ConstructorRejectsUnsafeHttpBeforeAnyIo(string baseUrl, bool allowHttp)
+    {
+        var options = ValidOptions();
+        options.BaseUrl = baseUrl;
+        options.AllowHttp = allowHttp;
+        var secrets = new FakeSecrets();
+        using var handler = new FakeHandler((_, _) => throw new InvalidOperationException("Nem történhet hálózati művelet."));
+        var error = Assert.Throws<OptionsValidationException>(() =>
+        {
+            using var client = new HomeAssistantClient(Options.Create(options), secrets, handler);
+        });
+        Assert.Equal(HomeAssistantOptionsValidator.SafeMessage, Assert.Single(error.Failures));
+        Assert.Equal(0, handler.Calls);
+        Assert.Equal(Guid.Empty, secrets.RequestedId);
     }
 
     [Fact]
@@ -245,6 +273,59 @@ public sealed class HomeAssistantClientTests
             Assert.True(error.Message == "A Home Assistant lekérés időkorlátja lejárt.", "Nem biztonságos időkorlátüzenet.");
             Assert.True(error.InnerException is null, "Belső kivétel szivárgott.");
         }
+        Assert.Equal(duringSecret ? 0 : 1, handler.Calls);
+    }
+
+    [Fact]
+    public async Task ParallelHttpTimeoutsUseTheOperationDeadline()
+    {
+        var prematureHttpCancellations = 0;
+        var incorrectFailures = 0;
+        for (var batch = 0; batch < 8; batch++)
+        {
+            await Task.WhenAll(Enumerable.Range(0, 128).Select(async _ =>
+            {
+                var secrets = new FakeSecrets();
+                var handler = new FakeHandler(async (_, ct) =>
+                {
+                    try { await Task.Delay(Timeout.InfiniteTimeSpan, ct); }
+                    catch (OperationCanceledException)
+                    {
+                        if (!secrets.CancellationToken.IsCancellationRequested)
+                            Interlocked.Increment(ref prematureHttpCancellations);
+                        throw new OperationCanceledException(secrets.Token);
+                    }
+                    return Json("{}");
+                });
+                var options = ValidOptions();
+                options.Timeout = TimeSpan.FromMilliseconds(60);
+                using var client = new HomeAssistantClient(Options.Create(options), secrets, handler);
+                var caught = await Record.ExceptionAsync(() => client.GetConfigAsync());
+                if (caught is not HomeAssistantException ||
+                    caught.Message != "A Home Assistant lekérés időkorlátja lejárt." || caught.InnerException is not null ||
+                    caught.ToString().Contains(secrets.Token, StringComparison.Ordinal))
+                    Interlocked.Increment(ref incorrectFailures);
+            }));
+        }
+        Assert.True(prematureHttpCancellations == 0,
+            $"A HTTP megszakítása megelőzte a műveleti határidőt: {prematureHttpCancellations}; hibás besorolás: {incorrectFailures}.");
+        Assert.True(incorrectFailures == 0, $"Hibás vagy nem biztonságos időkorlát-besorolás: {incorrectFailures}.");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task IndependentProviderCancellationIsNotReportedAsTimeout(bool duringSecret)
+    {
+        var secrets = new FakeSecrets();
+        if (duringSecret) secrets.Read = _ => throw new OperationCanceledException(secrets.Token);
+        var handler = new FakeHandler((_, _) => throw new OperationCanceledException(secrets.Token));
+        using var client = new HomeAssistantClient(Options.Create(ValidOptions()), secrets, handler);
+        var caught = await Record.ExceptionAsync(() => client.GetConfigAsync());
+        Assert.True(caught is HomeAssistantException, "A szolgáltatói hiba típusa hibás.");
+        Assert.True(caught.Message == "A Home Assistant lekérés sikertelen.", "A szolgáltatói hibát időkorlátnak minősítette.");
+        Assert.True(caught.InnerException is null && !caught.ToString().Contains(secrets.Token, StringComparison.Ordinal),
+            "A szolgáltatói hiba titkot tartalmaz.");
         Assert.Equal(duringSecret ? 0 : 1, handler.Calls);
     }
 
