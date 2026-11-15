@@ -4,6 +4,7 @@ using AgentGate.Policy;
 using AgentGate.Tools;
 using AgentGate.Secrets;
 using AgentGate.Approval;
+using AgentGate.Approval.HomeAssistant;
 
 var builder = WebApplication.CreateBuilder(args);
 // Az SDK 2.4.0 a filteren kívül nyers eszköznevet, Trace szinten teljes üzenettartalmat naplóz.
@@ -30,6 +31,7 @@ builder.Services.Configure<KillSwitchFileOptions>(builder.Configuration.GetSecti
 builder.Services.AddSingleton<IKillSwitchStateSource, FileKillSwitchStateSource>();
 builder.Services.AddSingleton<McpAuditFilter>();
 builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddHomeAssistantApproval(builder.Configuration);
 builder.Services.AddSingleton<IApprovalOperationHandler, ApprovalTestOperation>();
 builder.Services.AddSingleton<ApprovalGate>();
 builder.Services.AddOptions<ApprovalGateOptions>()

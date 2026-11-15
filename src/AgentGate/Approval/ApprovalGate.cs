@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using System.Threading.Channels;
 using AgentGate.Audit;
 using AgentGate.Policy;
 using AgentGate.Secrets;
@@ -18,6 +19,7 @@ public sealed class ApprovalGate(
 {
     private readonly IApprovalChannel? channel = channels.SingleOrDefault();
     private readonly ConcurrentDictionary<Guid, PendingOperation> requests = new();
+    private readonly Channel<ApprovalOutcome> outcomes = Channel.CreateBounded<ApprovalOutcome>(1024);
     private volatile bool readerHealthy = true;
     private readonly ApprovalChannelWork channelWork = new(clock, TimeSpan.FromSeconds(gateOptions.Value.SendTimeoutSeconds));
 
@@ -37,16 +39,20 @@ public sealed class ApprovalGate(
     {
         if (!requests.TryGetValue(id, out var pending))
             return;
+        ApprovalOutcome? failed = null;
         lock (pending.Sync)
         {
-            if (!committed)
+            if (!committed && !pending.Claimed)
             {
                 pending.Claimed = true;
                 pending.State = ApprovalState.Failed;
                 pending.Result = "A kérés előzetes auditja nem véglegesíthető; nincs végrehajtási engedély.";
+                failed = new ApprovalOutcome(id, pending.State, pending.Result);
             }
             pending.Ready.TrySetResult(committed);
         }
+        if (failed is not null && channel is not null && !outcomes.Writer.TryWrite(failed))
+            readerHealthy = false;
     }
 
     public ApprovalOutcome? GetStatus(Guid id)
@@ -59,7 +65,7 @@ public sealed class ApprovalGate(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await Task.WhenAll(ReadDecisionsAsync(stoppingToken), ExpireAsync(stoppingToken));
+        await Task.WhenAll(ReadDecisionsAsync(stoppingToken), ExpireAsync(stoppingToken), SendOutcomesAsync(stoppingToken));
     }
 
     private async Task ExpireAsync(CancellationToken stoppingToken)
@@ -198,12 +204,22 @@ public sealed class ApprovalGate(
         return approvals.TryConsume(permission.Id, hash);
     }
 
-    private async Task NotifyAsync(ApprovalOutcome outcome, CancellationToken cancellationToken)
+    private Task NotifyAsync(ApprovalOutcome outcome, CancellationToken cancellationToken) => channel is null
+        ? Task.CompletedTask : outcomes.Writer.WriteAsync(outcome, cancellationToken).AsTask();
+
+    private async Task SendOutcomesAsync(CancellationToken cancellationToken)
     {
         if (channel is null)
             return;
-        // Az értesítési hiba nem változtatja meg a döntést, és nem ismétel végrehajtást.
-        _ = await channelWork.SendAsync(token => channel.SendOutcomeAsync(outcome, token), cancellationToken);
+        try
+        {
+            await foreach (var outcome in outcomes.Reader.ReadAllAsync(cancellationToken))
+            {
+                // A foglalt helyre várás nem küldési retry: a csatorna egyszer kapja meg a végállapotot.
+                _ = await channelWork.SendAsync(token => channel.SendOutcomeAsync(outcome, token), cancellationToken, waitForSlot: true);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
     }
 
     private async Task<bool> RecordLifecycleAsync(PendingOperation pending, string phase, ApprovalDecision? decision, CancellationToken cancellationToken)
@@ -259,9 +275,23 @@ public sealed class ApprovalGate(
             clock.GetUtcNow().AddMinutes(gateOptions.Value.LifetimeMinutes));
         var pending = new PendingOperation(operation, operation.ComputeHash(owner), owner, notice);
         requests[id] = pending;
+        var started = 0;
+        var invalidated = 0;
+        var revocationQueued = 0;
+        void RevokeNotice()
+        {
+            if (Interlocked.Exchange(ref revocationQueued, 1) != 0) return;
+            if (!outcomes.Writer.TryWrite(new ApprovalOutcome(id, ApprovalState.Failed, "A kérés nem véglegesíthető; nincs végrehajtási engedély.")))
+                readerHealthy = false;
+        }
         try
         {
-            if (!await channelWork.SendAsync(token => channel.SendRequestAsync(notice, token), cancellationToken))
+            if (!await channelWork.SendAsync(async token =>
+            {
+                Interlocked.Exchange(ref started, 1);
+                try { await channel.SendRequestAsync(notice, token); }
+                finally { if (Volatile.Read(ref invalidated) != 0) RevokeNotice(); }
+            }, cancellationToken))
                 throw new InvalidOperationException();
             return id;
         }
@@ -269,6 +299,8 @@ public sealed class ApprovalGate(
         {
             requests.TryRemove(id, out _);
             pending.Ready.TrySetResult(false);
+            Volatile.Write(ref invalidated, 1);
+            if (Volatile.Read(ref started) != 0) RevokeNotice();
             return null;
         }
     }

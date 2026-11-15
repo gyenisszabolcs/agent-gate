@@ -64,6 +64,7 @@ public sealed class ApprovalGateTests
         using var failed = await call;
         Assert.True(failed.RootElement.GetProperty("result").GetProperty("isError").GetBoolean());
         Assert.Equal(ApprovalState.Failed, app.Services.GetRequiredService<ApprovalGate>().GetStatus(id)!.State);
+        Assert.Equal(ApprovalState.Failed, (await channel.Outcomes.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2))).State);
         var approvals = app.Services.GetRequiredService<InMemoryApprovalStore>();
         var permits = typeof(InMemoryApprovalStore).GetField("requests", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(approvals)!;
         Assert.Equal(0, permits.GetType().GetProperty("Count")!.GetValue(permits));
@@ -72,7 +73,7 @@ public sealed class ApprovalGateTests
         store.Fail = false;
         using var next = await CallAsync(app, "gate_approval_test", new { text = "második" });
         await channel.Decisions.Writer.WriteAsync(new ApprovalDecision(channel.Requests[1].Id, ApprovalChoice.Reject, "admin", DateTimeOffset.UtcNow));
-        Assert.Equal(ApprovalState.Rejected, (await channel.Finished.Task.WaitAsync(TimeSpan.FromSeconds(2))).State);
+        Assert.Equal(ApprovalState.Rejected, (await channel.Outcomes.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2))).State);
         Assert.Equal(0, handler.Count);
     }
 
