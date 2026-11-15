@@ -1,15 +1,54 @@
-# Bitwarden Secrets Manager titoklekérés (#10)
+# Bitwarden Secrets Manager titoklekérés (#10, #19)
 
 Önálló, még be nem kötött modul. A `Program.cs`, az MCP-eszközök és a DI-konfiguráció nem változott. Teszt és fejlesztés nem használ valódi gépi tokent és nem hív Bitwarden-szolgáltatást.
 
 ## Használat és határ
 
 - A hívó kizárólag az `ISecretProvider.GetSecretAsync(Guid, CancellationToken)` interfészen kérjen titkot; a titokazonosító nem lehet üres.
-- A `BitwardenSecretProvider` alapértelmezésben minden lekéréskor, futásidőben az `AGENT_GATE_BITWARDEN_ACCESS_TOKEN` környezeti változót olvassa. Nincs `.env`, tokenfájl, konfigurációba írt token vagy titokgyorsítótár.
+- A `BitwardenSecretProvider` minden lekéréskor, futásidőben választ tokenforrást. Nem-null `CREDENTIALS_DIRECTORY` mellett kizárólag annak credentialfájlja használható; hiányzó/null változó esetén az `AGENT_GATE_BITWARDEN_ACCESS_TOKEN` fejlesztői környezeti forrás marad. Nincs `.env`, konfigurációba írt token vagy titokgyorsítótár.
 - A környezetolvasó `Func<string, string?>` és az `IBitwardenSecretClient` szolgáltatói határ tesztben injektálható. Ezek megbízható belső függőségek; a környezetolvasó a `RUST_LOG` ellenőrzésénél is használatos, ezért éles használatban a tényleges folyamatkörnyezetet kell tükröznie.
 - Az adapter minden kéréshez külön SDK-klienst hoz létre és felszabadítja azt, így nincs megosztott natív munkamenet és elavult tokennel működő gyorsítótár.
 - Az alapértelmezett SDK-beállítás a Bitwarden amerikai felhőjét használja. EU/self-hosted végpont konfigurálása nem része ennek a modulnak.
 - A visszaadott `string` bizalmas adat: a hívó nem naplózhatja és nem adhatja MCP-válaszba. A menedzselt `string` memóriájának garantált nullázását a modul nem ígéri.
+
+## Systemd credential tokenforrás (#19)
+
+A fájlnév a konstruktor opcionális `credentialFileName` paraméterével állítható,
+alapértelmezése **`bitwarden-access-token`**. Példa bekötés nélküli példányosításra:
+
+```csharp
+ISecretProvider provider = new BitwardenSecretProvider(
+    credentialFileName: "bitwarden-access-token");
+```
+
+- A fájlnév csak ASCII betűt, számot, pontot, aláhúzást és kötőjelet tartalmazhat;
+  nem lehet üres, `.` vagy `..`. Abszolút útvonal, alkönyvtár, perjel, fordított
+  perjel, meghajtójelölés, whitespace és nem ASCII karakter tiltott. Az ellenőrzés
+  a credential ág fájlhozzáférése előtt történik; az env-only ágon nincs fájlolvasás.
+- A nem-null gyökérnek létező, abszolút könyvtárnak kell lennie. Az üres, whitespace,
+  relatív, nem létező vagy fájlra mutató érték hiba, **nem hiányzó beállítás**.
+  Ilyenkor az env-token olvasása sem történik meg, nincs visszaesés.
+- A gyökér és a credentialfájl közvetlen symlinkje/reparse pointja elutasított,
+  a gyökéren belülre mutató fájllink is. A hiányzó, nem olvasható vagy könyvtárként
+  létező credential biztonságos `ProviderFailure` hibával zárul. Üres vagy kizárólag
+  whitespace tartalmú token: `MissingAccessToken`. Mindkettő rögzített magyar
+  üzenettel, nyers I/O-kivétel, útvonal, fájltartalom, `InnerException` és `Data` nélkül.
+- A fájl tartalma `File.ReadAllTextAsync` hívással, a hívó `CancellationToken`
+  értékének továbbadásával olvasható. Mindkét forráson kizárólag `TrimEnd()` történik;
+  az elején levő whitespace megmarad. A levágás utáni üres érték tiltott.
+- **Üzemeltetési bizalmi szerződés:** a gyökér systemd által biztosított, megbízható,
+  csak olvasható credentialkönyvtár; a gyökér, ősei és a fájl nem cserélhetők vagy
+  módosíthatók nem megbízható szereplő által a lekérés közben. Az ősútvonalak
+  feloldása is megbízható. A metaadat-ellenőrzés és az aszinkron megnyitás között
+  nincs atomi `openat`/`O_NOFOLLOW` garancia: ez nem támadó által írható fájlrendszer
+  sandboxa. A modul nem ellenőrzi/állítja át a mountot vagy a tulajdonost, nem telepít
+  credentialt, és nem olvas éles credentialkönyvtárat a tesztben.
+- Az `ISecretProvider` GUID-alapú API-ja és a korábbi két opcionális konstruktor-
+  argumentum forráskompatibilis maradt. `Program.cs`-, DI- és systemd-bekötés nincs.
+  A kötelező **`RUST_LOG=off`** és a meglévő SDK-hibahatár változatlan.
+
+A #19 ellenőrzési eredményei, TDD-bizonyítékai és korlátai:
+[`ISSUE-19-HANDOFF.md`](ISSUE-19-HANDOFF.md).
 
 ## Miért hivatalos SDK, nem saját REST/kriptográfia?
 
@@ -41,7 +80,7 @@ Nincs belső szolgáltatói kivétel, nyers válasz vagy kiegészítő adat a ki
 
 **SDK-korlát:** a vizsgált hivatalos C# belépés és lekérés szinkron, nincs `CancellationToken` paraméterük.[2][3] Az aszinkron adapter `Task.Run` ütemezést és ugyanazt a hívói megszakítási tokent használja; ellenőriz a natív hívások előtt és után. A már futó natív hálózati hívást nem tudja azonnal megszakítani. A modul megvárja a hívást és az erőforrás-felszabadítást; nem hagy hátra elfelejtett háttérfeladatot, és megszakítás után nem adja ki a lekért titkot. Az azonnali hálózati megszakítás követelménye más SDK-t vagy külön izolált folyamatra vonatkozó további döntést igényelne.
 
-## Ellenőrzés
+## Korábbi #10 ellenőrzés (történeti adatok)
 
 TDD: az új működési szeletek előtt ténylegesen futott és elbukott a hozzájuk tartozó teszt, utána a célzott és teljes tesztkészlet sikeres lett. A tesztek csak futásidőben generált véletlen értéket használnak; a titkos értéket kezelő állítások hiba esetén sem írják ki a várt/tényleges titkot, szolgáltatói kivételt vagy belső kivételt.
 
