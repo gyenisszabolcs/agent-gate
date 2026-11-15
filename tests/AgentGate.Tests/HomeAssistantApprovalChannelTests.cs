@@ -25,6 +25,241 @@ namespace AgentGate.Tests;
 
 public sealed class HomeAssistantApprovalChannelTests
 {
+    [Theory]
+    [InlineData(5)]
+    [InlineData(60)]
+    [InlineData(300)]
+    public async Task QuietLiveConnectionUsesIncreasingPingsWithoutReconnectOrRepeatedSecretLookup(int maxIdleSeconds)
+    {
+        var clock = new HeartbeatClock();
+        await using var harness = new Standalone(clock: clock, configure: options => options.MaxIdleSeconds = maxIdleSeconds);
+        await harness.StartAsync();
+        var interval = TimeSpan.FromMilliseconds(Math.Min(20_000, maxIdleSeconds * 1000 / 3));
+        // Több teljes MaxIdle ablakon át kizárólag pong érkezik, jóváhagyási esemény nem.
+        var cycles = maxIdleSeconds / interval.TotalSeconds * 2 + 1;
+        for (var index = 0; index < cycles; index++)
+        {
+            await WaitAsync(() => clock.HasTimerDueIn(interval));
+            clock.Advance(interval);
+            await WaitAsync(() => harness.Socket.PingIds.Count == index + 1);
+            await WaitAsync(() => clock.HasTimerDueIn(interval));
+            Assert.True(harness.Channel.IsAvailable);
+            Assert.Equal(1, harness.Factory.Count);
+            Assert.Equal(1, harness.Secrets.Calls);
+        }
+        var ids = harness.Socket.PingIds.ToArray();
+        Assert.Equal(1, harness.Socket.MaxActiveSends);
+        Assert.Equal(0, harness.Socket.ActiveSends);
+        Assert.True(ids[0] > 1 && ids.Zip(ids.Skip(1), (left, right) => right > left).All(increasing => increasing),
+            "A heartbeat-azonosítók nem növekednek a feliratkozás azonosítója után.");
+        await harness.Channel.SendRequestAsync(Notice(), CancellationToken.None);
+        Assert.Equal(1, harness.Http.Count);
+        Assert.Equal(1, harness.Factory.Count);
+        Assert.Equal(2, harness.Secrets.Calls); // Az új REST-küldés külön tokenlekérése, nem reconnect.
+        await harness.Channel.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(0, clock.ActiveTimers);
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("wrong-id")]
+    [InlineData("string-id")]
+    [InlineData("missing-id")]
+    [InlineData("events")]
+    public async Task MissingMatchingPongReconnectsAtDeadlineEvenWithUnrelatedTraffic(string kind)
+    {
+        var clock = new HeartbeatClock();
+        await using var harness = new Standalone(clock: clock);
+        harness.Socket.AutoPong = false;
+        harness.Factory.ReconnectAutoHandshake = false;
+        await harness.StartAsync();
+        await WaitAsync(() => clock.HasTimerDueIn(TimeSpan.FromSeconds(20)));
+        clock.Advance(TimeSpan.FromSeconds(20));
+        await WaitAsync(() => harness.Socket.PingIds.Count == 1);
+        var ping = harness.Socket.PingIds.Single();
+        for (var index = 0; index < 3; index++)
+        {
+            if (kind != "missing")
+            {
+                var reads = harness.Socket.ReceiveCalls;
+                var payload = kind switch
+                {
+                    "wrong-id" => JsonSerializer.Serialize(new { id = ping + 1, type = "pong" }),
+                    "string-id" => JsonSerializer.Serialize(new { id = ping.ToString(System.Globalization.CultureInfo.InvariantCulture), type = "pong" }),
+                    "missing-id" => "{\"type\":\"pong\"}",
+                    _ => Event(Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32)))
+                };
+                harness.Socket.Incoming.Writer.TryWrite(payload);
+                await WaitAsync(() => harness.Socket.ReceiveCalls > reads);
+            }
+            await WaitAsync(() => clock.ActiveTimers > 0);
+            clock.Advance(TimeSpan.FromSeconds(10));
+            Assert.True(harness.Channel.IsAvailable);
+            Assert.Equal(1, harness.Factory.Count);
+            Assert.Equal(1, harness.Secrets.Calls);
+        }
+        await WaitAsync(() => clock.HasTimerDueIn(TimeSpan.FromSeconds(10)));
+        clock.Advance(TimeSpan.FromSeconds(10));
+        await WaitAsync(() => !harness.Channel.IsAvailable && clock.HasTimerDueIn(TimeSpan.FromSeconds(1)));
+        Assert.Equal(0, harness.Socket.ActiveReceives);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await WaitAsync(() => harness.Factory.Count == 2 && harness.Secrets.Calls == 2);
+        Assert.False(harness.Channel.IsAvailable); // Új kapcsolat auth/ACK előtt nem használható.
+    }
+
+    [Fact]
+    public async Task PreviousPongCannotSatisfyNextPingAndHeartbeatDoesNotEatApprovalEvents()
+    {
+        var clock = new HeartbeatClock();
+        await using var harness = new Standalone(clock: clock);
+        await harness.StartAsync();
+        await harness.Channel.SendRequestAsync(Notice(), CancellationToken.None);
+        var (approve, _) = Codes(harness.Http);
+        await WaitAsync(() => clock.HasTimerDueIn(TimeSpan.FromSeconds(20)));
+        clock.Advance(TimeSpan.FromSeconds(20));
+        await WaitAsync(() => harness.Socket.PingIds.Count == 1 && clock.HasTimerDueIn(TimeSpan.FromSeconds(20)));
+        var previous = harness.Socket.PingIds.Single();
+        harness.Socket.AutoPong = false;
+        clock.Advance(TimeSpan.FromSeconds(20));
+        await WaitAsync(() => harness.Socket.PingIds.Count == 2);
+        var reads = harness.Socket.ReceiveCalls;
+        harness.Socket.Incoming.Writer.TryWrite(JsonSerializer.Serialize(new { id = previous, type = "pong" }));
+        harness.Socket.Incoming.Writer.TryWrite(Event(approve));
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        await using var decisions = harness.Channel.ReadDecisionsAsync(deadline.Token).GetAsyncEnumerator();
+        Assert.True(await decisions.MoveNextAsync());
+        Assert.Equal(ApprovalChoice.Approve, decisions.Current.Choice);
+        await WaitAsync(() => harness.Socket.ReceiveCalls >= reads + 2 && clock.HasTimerDueIn(TimeSpan.FromSeconds(40)));
+        clock.Advance(TimeSpan.FromSeconds(40));
+        await WaitAsync(() => !harness.Channel.IsAvailable);
+        Assert.Equal(1, harness.Socket.MaxActiveReceives);
+    }
+
+    [Fact]
+    public async Task UnsolicitedPongCannotPostponeFirstPing()
+    {
+        var clock = new HeartbeatClock();
+        await using var harness = new Standalone(clock: clock);
+        await harness.StartAsync();
+        await WaitAsync(() => clock.HasTimerDueIn(TimeSpan.FromSeconds(20)));
+        clock.Advance(TimeSpan.FromSeconds(10));
+        var reads = harness.Socket.ReceiveCalls;
+        harness.Socket.Incoming.Writer.TryWrite("{\"id\":99,\"type\":\"pong\"}");
+        await WaitAsync(() => harness.Socket.ReceiveCalls > reads && clock.HasTimerDueIn(TimeSpan.FromSeconds(10)));
+        clock.Advance(TimeSpan.FromSeconds(10));
+        await WaitAsync(() => harness.Socket.PingIds.Count == 1 && clock.HasTimerDueIn(TimeSpan.FromSeconds(20)));
+        Assert.Equal(1, harness.Factory.Count);
+        Assert.Equal(1, harness.Secrets.Calls);
+        Assert.Equal(1, harness.Socket.MaxActiveSends);
+    }
+
+    [Fact]
+    public async Task PingSendDeadlineCannotOutliveSmallerRemainingLivenessWindow()
+    {
+        var clock = new HeartbeatClock();
+        await using var harness = new Standalone(clock: clock, configure: options => options.MaxIdleSeconds = 5);
+        harness.Socket.BlockPingSend = true;
+        await harness.StartAsync();
+        var interval = TimeSpan.FromMilliseconds(5 * 1000 / 3);
+        var remaining = TimeSpan.FromSeconds(5) - interval;
+        await WaitAsync(() => clock.HasTimerDueIn(interval));
+        clock.Advance(interval);
+        await WaitAsync(() => harness.Socket.PingIds.Count == 1 && clock.HasTimerDueIn(remaining));
+        Assert.Equal(1, harness.Socket.ActiveSends);
+        clock.Advance(remaining);
+        await WaitAsync(() => !harness.Channel.IsAvailable && clock.HasTimerDueIn(TimeSpan.FromSeconds(1)));
+        Assert.Equal(0, harness.Socket.ActiveSends);
+        Assert.Equal(0, harness.Socket.ActiveReceives);
+        Assert.Equal(1, harness.Secrets.Calls);
+    }
+
+    [Fact]
+    public async Task DelayedHeartbeatCannotTurnExpiredWindowIntoInfinitePingSend()
+    {
+        var clock = new HeartbeatClock();
+        await using var harness = new Standalone(clock: clock);
+        harness.Socket.BlockPingSend = true;
+        harness.Factory.ReconnectAutoHandshake = false;
+        await harness.StartAsync();
+        await WaitAsync(() => clock.HasTimerDueIn(TimeSpan.FromSeconds(20)));
+        // A késve ébredő hurok régen -1 ms-ot, azaz végtelen küldési határidőt számolt.
+        clock.Advance(TimeSpan.FromMilliseconds(60_001));
+        await WaitAsync(() => !harness.Channel.IsAvailable && clock.HasTimerDueIn(TimeSpan.FromSeconds(1)));
+        Assert.Empty(harness.Socket.PingIds);
+        Assert.Equal(0, harness.Socket.ActiveReceives);
+        Assert.Equal(1, harness.Secrets.Calls);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await WaitAsync(() => harness.Factory.Count == 2 && harness.Secrets.Calls == 2);
+    }
+
+    [Fact]
+    public async Task BlockedPingSendIsBoundedAndDisconnectsWithoutLeavingAnActiveReceive()
+    {
+        var clock = new HeartbeatClock();
+        await using var harness = new Standalone(clock: clock);
+        harness.Socket.BlockPingSend = true;
+        await harness.StartAsync();
+        await WaitAsync(() => clock.HasTimerDueIn(TimeSpan.FromSeconds(20)));
+        clock.Advance(TimeSpan.FromSeconds(20));
+        await WaitAsync(() => harness.Socket.PingIds.Count == 1 && clock.HasTimerDueIn(TimeSpan.FromSeconds(5)));
+        clock.Advance(TimeSpan.FromSeconds(5));
+        await WaitAsync(() => !harness.Channel.IsAvailable && clock.HasTimerDueIn(TimeSpan.FromSeconds(1)));
+        Assert.Equal(0, harness.Socket.ActiveReceives);
+        Assert.Equal(1, harness.Secrets.Calls);
+        Assert.Equal(1, harness.Factory.Count);
+    }
+
+    [Fact]
+    public async Task HeartbeatKeepsOneFragmentedReceiveAndPreservesInterleavedApprovalAndPong()
+    {
+        var clock = new HeartbeatClock();
+        await using var harness = new Standalone(clock: clock);
+        await harness.StartAsync();
+        await harness.Channel.SendRequestAsync(Notice(), CancellationToken.None);
+        var (approve, _) = Codes(harness.Http);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        harness.Socket.FragmentRelease = release.Task;
+        var payload = JsonNode.Parse(Event(approve))!;
+        payload["padding"] = new string('x', 5000);
+        harness.Socket.Incoming.Writer.TryWrite(payload.ToJsonString());
+        try
+        {
+            await harness.Socket.FragmentEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await WaitAsync(() => clock.HasTimerDueIn(TimeSpan.FromSeconds(20)));
+            clock.Advance(TimeSpan.FromSeconds(20));
+            await WaitAsync(() => harness.Socket.PingIds.Count == 1);
+            Assert.Equal(1, harness.Socket.ActiveReceives);
+            release.TrySetResult();
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            await using var decisions = harness.Channel.ReadDecisionsAsync(deadline.Token).GetAsyncEnumerator();
+            Assert.True(await decisions.MoveNextAsync());
+            Assert.Equal(ApprovalChoice.Approve, decisions.Current.Choice);
+            await WaitAsync(() => clock.HasTimerDueIn(TimeSpan.FromSeconds(20)));
+            Assert.True(harness.Channel.IsAvailable);
+            Assert.Equal(1, harness.Factory.Count);
+            Assert.Equal(1, harness.Socket.MaxActiveReceives);
+        }
+        finally { release.TrySetResult(); }
+    }
+
+    [Fact]
+    public async Task PongAtExactDeadlineCannotReviveDeadConnection()
+    {
+        var clock = new HeartbeatClock();
+        await using var harness = new Standalone(clock: clock);
+        harness.Socket.AutoPong = false;
+        await harness.StartAsync();
+        await WaitAsync(() => clock.HasTimerDueIn(TimeSpan.FromSeconds(20)));
+        clock.Advance(TimeSpan.FromSeconds(20));
+        await WaitAsync(() => harness.Socket.PingIds.Count == 1 && clock.HasTimerDueIn(TimeSpan.FromSeconds(40)));
+        var id = harness.Socket.PingIds.Single();
+        clock.Advance(TimeSpan.FromSeconds(40));
+        harness.Socket.Incoming.Writer.TryWrite(JsonSerializer.Serialize(new { id, type = "pong" }));
+        await WaitAsync(() => !harness.Channel.IsAvailable);
+        Assert.Equal(1, harness.Factory.Count);
+        Assert.Equal(1, harness.Secrets.Calls);
+    }
+
     [Fact]
     public void ProductionTransportFactoriesDisableRedirectProxyAndCookiesWithoutConnecting()
     {
@@ -831,6 +1066,62 @@ public sealed class HomeAssistantApprovalChannelTests
         public override DateTimeOffset GetUtcNow() => Now;
     }
 
+    private sealed class HeartbeatClock : TimeProvider
+    {
+        private readonly object sync = new();
+        private readonly List<ManualTimer> timers = [];
+        private long ticks;
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public override long GetTimestamp() { lock (sync) return ticks; }
+        public override DateTimeOffset GetUtcNow() => DateTimeOffset.UnixEpoch.AddTicks(GetTimestamp());
+        public int ActiveTimers { get { lock (sync) return timers.Count(timer => timer.Due is not null); } }
+        public bool HasTimerDueIn(TimeSpan delay)
+        {
+            lock (sync) return timers.Any(timer => timer.Due is { } due && due - ticks == delay.Ticks);
+        }
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = new ManualTimer(this, callback, state);
+            lock (sync) timers.Add(timer);
+            timer.Change(dueTime, period);
+            return timer;
+        }
+        public void Advance(TimeSpan amount)
+        {
+            List<ManualTimer> ready;
+            lock (sync)
+            {
+                ticks += amount.Ticks;
+                ready = timers.Where(timer => timer.Due is { } due && due <= ticks).ToList();
+                foreach (var timer in ready) timer.Due = timer.Period > TimeSpan.Zero ? ticks + timer.Period.Ticks : null;
+            }
+            foreach (var timer in ready) timer.Callback(timer.State);
+        }
+        private sealed class ManualTimer(HeartbeatClock owner, TimerCallback callback, object? state) : ITimer
+        {
+            private bool disposed;
+            public TimerCallback Callback { get; } = callback;
+            public object? State { get; } = state;
+            public long? Due { get; set; }
+            public TimeSpan Period { get; private set; }
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                lock (owner.sync)
+                {
+                    if (disposed) return false;
+                    Period = period;
+                    Due = dueTime == Timeout.InfiniteTimeSpan ? null : owner.ticks + dueTime.Ticks;
+                    return true;
+                }
+            }
+            public void Dispose()
+            {
+                lock (owner.sync) { disposed = true; Due = null; owner.timers.Remove(this); }
+            }
+            public ValueTask DisposeAsync() { Dispose(); return ValueTask.CompletedTask; }
+        }
+    }
+
     private sealed class ProbeOperation : IApprovalOperationHandler
     {
         public string Tool => "gate_approval_test";
@@ -952,6 +1243,16 @@ public sealed class HomeAssistantApprovalChannelTests
         private int offset;
         public bool AutoHandshake { get; set; } = true;
         public bool BlockAuthSend { get; set; }
+        public bool AutoPong { get; set; } = true;
+        public bool BlockPingSend { get; set; }
+        public Task? FragmentRelease { get; set; }
+        public TaskCompletionSource FragmentEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public System.Collections.Concurrent.ConcurrentQueue<long> PingIds { get; } = new();
+        public int ReceiveCalls;
+        public int ActiveReceives;
+        public int MaxActiveReceives;
+        public int ActiveSends;
+        public int MaxActiveSends;
         public TaskCompletionSource Disposed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public Channel<string> Incoming { get; } = Channel.CreateUnbounded<string>();
         public TaskCompletionSource AuthSent { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -967,44 +1268,70 @@ public sealed class HomeAssistantApprovalChannelTests
         public override void Dispose() { state = WebSocketState.Closed; Disposed.TrySetResult(); }
         public override Task CloseAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken) { state = WebSocketState.Closed; return Task.CompletedTask; }
         public override Task CloseOutputAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken) { state = WebSocketState.Closed; return Task.CompletedTask; }
-        public override Task SendAsync(ArraySegment<byte> buffer, WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken)
+        public override async Task SendAsync(ArraySegment<byte> buffer, WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken)
         {
-            using var message = JsonDocument.Parse(buffer.AsMemory());
-            var type = message.RootElement.GetProperty("type").GetString();
-            if (type == "auth")
+            cancellationToken.ThrowIfCancellationRequested();
+            if (state != WebSocketState.Open) throw new InvalidOperationException("A tesztkapcsolat nem nyitott.");
+            var active = Interlocked.Increment(ref ActiveSends);
+            MaxActiveSends = Math.Max(MaxActiveSends, active);
+            try
             {
-                AuthToken = message.RootElement.GetProperty("access_token").GetString();
-                AuthSent.TrySetResult();
-                if (BlockAuthSend) return Task.Delay(Timeout.Infinite, cancellationToken);
-                if (AutoHandshake) Incoming.Writer.TryWrite("{\"type\":\"auth_ok\"}");
+                using var message = JsonDocument.Parse(buffer.AsMemory());
+                var type = message.RootElement.GetProperty("type").GetString();
+                if (type == "auth")
+                {
+                    AuthToken = message.RootElement.GetProperty("access_token").GetString();
+                    AuthSent.TrySetResult();
+                    if (BlockAuthSend) await Task.Delay(Timeout.Infinite, cancellationToken);
+                    if (AutoHandshake) Incoming.Writer.TryWrite("{\"type\":\"auth_ok\"}");
+                }
+                if (type == "subscribe_events")
+                {
+                    SubscriptionType = message.RootElement.GetProperty("event_type").GetString();
+                    SubscribeSent.TrySetResult();
+                    if (AutoHandshake) Incoming.Writer.TryWrite("{\"id\":1,\"type\":\"result\",\"success\":true}");
+                }
+                if (type == "ping")
+                {
+                    var id = message.RootElement.GetProperty("id").GetInt64();
+                    PingIds.Enqueue(id);
+                    if (BlockPingSend) await Task.Delay(Timeout.Infinite, cancellationToken);
+                    if (AutoPong) Incoming.Writer.TryWrite(JsonSerializer.Serialize(new { id, type = "pong" }));
+                }
             }
-            if (type == "subscribe_events")
-            {
-                SubscriptionType = message.RootElement.GetProperty("event_type").GetString();
-                SubscribeSent.TrySetResult();
-                if (AutoHandshake) Incoming.Writer.TryWrite("{\"id\":1,\"type\":\"result\",\"success\":true}");
-            }
-            return Task.CompletedTask;
+            finally { Interlocked.Decrement(ref ActiveSends); }
         }
         public override async Task<WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> buffer, CancellationToken cancellationToken)
         {
-            if (pending is null)
+            Interlocked.Increment(ref ReceiveCalls);
+            var active = Interlocked.Increment(ref ActiveReceives);
+            MaxActiveReceives = Math.Max(MaxActiveReceives, active);
+            try
             {
-                var input = await Incoming.Reader.ReadAsync(cancellationToken);
-                if (input == "__close")
+                if (pending is null)
                 {
-                    state = WebSocketState.CloseReceived;
-                    return new WebSocketReceiveResult(0, WebSocketMessageType.Close, true);
+                    var input = await Incoming.Reader.ReadAsync(cancellationToken);
+                    if (input == "__close")
+                    {
+                        state = WebSocketState.CloseReceived;
+                        return new WebSocketReceiveResult(0, WebSocketMessageType.Close, true);
+                    }
+                    pending = Encoding.UTF8.GetBytes(input);
+                    offset = 0;
                 }
-                pending = Encoding.UTF8.GetBytes(input);
-                offset = 0;
+                if (offset > 0 && FragmentRelease is { } release)
+                {
+                    FragmentEntered.TrySetResult();
+                    await release.WaitAsync(cancellationToken);
+                }
+                var count = Math.Min(buffer.Count, pending.Length - offset);
+                pending.AsSpan(offset, count).CopyTo(buffer.AsSpan());
+                offset += count;
+                var end = offset == pending.Length;
+                if (end) pending = null;
+                return new WebSocketReceiveResult(count, WebSocketMessageType.Text, end);
             }
-            var count = Math.Min(buffer.Count, pending.Length - offset);
-            pending.AsSpan(offset, count).CopyTo(buffer.AsSpan());
-            offset += count;
-            var end = offset == pending.Length;
-            if (end) pending = null;
-            return new WebSocketReceiveResult(count, WebSocketMessageType.Text, end);
+            finally { Interlocked.Decrement(ref ActiveReceives); }
         }
     }
 }

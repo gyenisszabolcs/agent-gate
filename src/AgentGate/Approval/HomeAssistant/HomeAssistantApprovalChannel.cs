@@ -78,13 +78,7 @@ public sealed class HomeAssistantApprovalChannel(
             available = true;
             wasAvailable = true;
             handshake.CancelAfter(Timeout.InfiniteTimeSpan);
-            while (!stoppingToken.IsCancellationRequested)
-            {
-                using var idle = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-                idle.CancelAfter(TimeSpan.FromSeconds(options.MaxIdleSeconds));
-                using var message = await ReceiveAsync(socket, idle.Token);
-                ProcessEvent(message.RootElement);
-            }
+            await RunHeartbeatAsync(socket, stoppingToken);
         }
         catch (Exception)
         {
@@ -92,6 +86,69 @@ public sealed class HomeAssistantApprovalChannel(
         }
         finally { available = false; }
         return wasAvailable;
+    }
+
+    private async Task RunHeartbeatAsync(WebSocket socket, CancellationToken stoppingToken)
+    {
+        var maxIdle = TimeSpan.FromSeconds(options.MaxIdleSeconds);
+        var interval = TimeSpan.FromMilliseconds(Math.Min(20_000, options.MaxIdleSeconds * 1000 / 3));
+        var lastPong = clock.GetTimestamp();
+        long commandId = 1; // A feliratkozás azonosítója; ugyanazon kapcsolaton minden ping új azonosítót kap.
+        long? awaitingPong = null;
+        using var connection = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        Task<JsonDocument>? receive = null;
+        try
+        {
+            while (!connection.IsCancellationRequested)
+            {
+                var elapsed = clock.GetElapsedTime(lastPong);
+                var remaining = (awaitingPong is null ? interval : maxIdle) - elapsed;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    if (awaitingPong is not null || elapsed >= maxIdle) throw new TimeoutException();
+                    awaitingPong = checked(++commandId);
+                    using var deadline = new CancellationTokenSource(
+                        TimeSpan.FromSeconds(Math.Min(options.TimeoutSeconds, (maxIdle - elapsed).TotalSeconds)), clock);
+                    using var send = CancellationTokenSource.CreateLinkedTokenSource(connection.Token, deadline.Token);
+                    await SendAsync(socket, new { id = awaitingPong.Value, type = "ping" }, send.Token);
+                    continue;
+                }
+                // A heartbeat nem szakítja meg a folyamatban lévő (akár töredékes) fogadást.
+                // Egyszerre csak ez az egy receive és az egyetlen hurok küldése élhet.
+                receive ??= ReceiveAsync(socket, connection.Token);
+                using var waiting = CancellationTokenSource.CreateLinkedTokenSource(connection.Token);
+                var tick = Task.Delay(remaining, clock, waiting.Token);
+                if (await Task.WhenAny(receive, tick) == receive)
+                {
+                    await waiting.CancelAsync();
+                    using var message = await receive;
+                    receive = null;
+                    if (awaitingPong is not null && clock.GetElapsedTime(lastPong) >= maxIdle)
+                        throw new TimeoutException();
+                    var root = message.RootElement;
+                    if (awaitingPong is { } expected && TryString(root, "type", out var type) && type == "pong" &&
+                        root.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.Number &&
+                        id.TryGetInt64(out var actual) && actual == expected)
+                    {
+                        awaitingPong = null;
+                        lastPong = clock.GetTimestamp();
+                    }
+                    else ProcessEvent(root);
+                }
+                else await tick; // A leállítás megszakítását is továbbadja; az időt a ciklus eleje ellenőrzi.
+            }
+        }
+        finally
+        {
+            available = false;
+            await connection.CancelAsync();
+            socket.Abort();
+            if (receive is not null)
+            {
+                try { using var message = await receive; }
+                catch (Exception) { } // A lezárt kapcsolat fogadását és esetleges késői hibáját megfigyeljük.
+            }
+        }
     }
 
     private void ProcessEvent(JsonElement message)
