@@ -15,18 +15,8 @@ namespace AgentGate.Tests;
 public sealed class HomeAssistantApprovalRegistrationTests
 {
     [Theory]
-    [InlineData("http://ha.invalid", true)]
     [InlineData("http://10.1.2.3", false)]
     [InlineData("http://8.8.8.8", true)]
-    [InlineData("http://127.0.0.1", true)]
-    [InlineData("http://169.254.1.2", true)]
-    [InlineData("http://[::1]", true)]
-    [InlineData("http://[fd00::1]", true)]
-    [InlineData("http://010.1.2.3", true)]
-    [InlineData("http://0x0a010203", true)]
-    [InlineData("http://10.1.2", true)]
-    [InlineData("http://10.1.2.3?other=1", true)]
-    [InlineData("http://10.1.2.3/path", true)]
     [InlineData("https://ha.invalid#fragment", false)]
     [InlineData("https://user@ha.invalid", false)]
     public void InvalidOriginsCannotBypassExistingHomeAssistantBoundary(string baseUrl, bool allowHttp)

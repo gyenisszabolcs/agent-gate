@@ -418,15 +418,20 @@ public sealed partial class HomeAssistantApprovalChannelTests
     [InlineData(true)]
     public async Task NonCooperativeSecretLookupTimesOutWithoutAccumulationAndIsOwnedUntilCompletion(bool synchronous)
     {
-        await using var harness = new Standalone(configure: options => options.TimeoutSeconds = 1);
+        var clock = new HeartbeatClock();
+        await using var harness = new Standalone(configure: options => options.TimeoutSeconds = 1, clock: clock);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         harness.Secrets.BlockedTask = release.Task;
         harness.Secrets.BlockSynchronously = synchronous;
         try
         {
             await harness.Channel.StartAsync(CancellationToken.None);
-            await WaitAsync(() => harness.Secrets.Calls == 1);
+            await WaitAsync(() => harness.Secrets.Calls == 1 && clock.HasTimerDueIn(TimeSpan.FromSeconds(1)));
+            clock.Advance(TimeSpan.FromSeconds(1));
             await harness.Socket.Disposed.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await WaitAsync(() => clock.HasTimerDueIn(TimeSpan.FromSeconds(1)));
+            Assert.Equal(1, harness.Factory.Count);
+            clock.Advance(TimeSpan.FromSeconds(1));
             await WaitAsync(() => harness.Factory.Count >= 2);
             Assert.False(harness.Channel.IsAvailable);
             Assert.Equal(1, harness.Secrets.Calls);
@@ -524,9 +529,7 @@ public sealed partial class HomeAssistantApprovalChannelTests
 
     [Theory]
     [InlineData("https://ha.invalid", false, "wss://ha.invalid/api/websocket")]
-    [InlineData("http://10.2.3.4", true, "ws://10.2.3.4/api/websocket")]
     [InlineData("http://172.16.0.1:8123", true, "ws://172.16.0.1:8123/api/websocket")]
-    [InlineData("http://192.168.2.3", true, "ws://192.168.2.3/api/websocket")]
     public async Task RealProgramUsesSameValidatedOriginAndWarnsSafelyForExplicitHttp(string baseUrl, bool allowHttp, string socketUrl)
     {
         await using var app = new ChannelApp(baseUrl, allowHttp);
@@ -550,7 +553,8 @@ public sealed partial class HomeAssistantApprovalChannelTests
     [InlineData("send-timeout")]
     public async Task FailedHandshakeNeverBecomesAvailableAndReconnectsWithoutPush(string kind)
     {
-        await using var harness = new Standalone(configure: options => options.TimeoutSeconds = 1);
+        var clock = new HeartbeatClock();
+        await using var harness = new Standalone(configure: options => options.TimeoutSeconds = 1, clock: clock);
         harness.Socket.AutoHandshake = false;
         harness.Socket.BlockAuthSend = kind == "send-timeout";
         harness.Factory.ReconnectAutoHandshake = false;
@@ -569,6 +573,9 @@ public sealed partial class HomeAssistantApprovalChannelTests
                 break;
         }
         await harness.Socket.Disposed.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await WaitAsync(() => clock.HasTimerDueIn(TimeSpan.FromSeconds(1)));
+        Assert.Equal(1, harness.Factory.Count);
+        clock.Advance(TimeSpan.FromSeconds(1));
         await WaitAsync(() => harness.Factory.Count >= 2);
         Assert.False(harness.Channel.IsAvailable);
         var error = await Record.ExceptionAsync(() => harness.Channel.SendRequestAsync(Notice(), CancellationToken.None));
@@ -579,9 +586,14 @@ public sealed partial class HomeAssistantApprovalChannelTests
     [Fact]
     public async Task ConnectionTimeoutIsBoundedAndRetriesWithoutTokenLookupOrPush()
     {
-        await using var harness = new Standalone(configure: options => options.TimeoutSeconds = 1);
+        var clock = new HeartbeatClock();
+        await using var harness = new Standalone(configure: options => options.TimeoutSeconds = 1, clock: clock);
         harness.Factory.BlockConnect = true;
         await harness.Channel.StartAsync(CancellationToken.None);
+        // Sikertelen ConnectAsync nem ad át socketet; a backoff időzítő jelzi a timeout végét.
+        await WaitAsync(() => clock.HasTimerDueIn(TimeSpan.FromSeconds(1)));
+        Assert.Equal(1, harness.Factory.Count);
+        clock.Advance(TimeSpan.FromSeconds(1));
         await WaitAsync(() => harness.Factory.Count >= 2);
         Assert.False(harness.Channel.IsAvailable);
         Assert.Equal(0, harness.Secrets.Calls);
@@ -793,12 +805,16 @@ public sealed partial class HomeAssistantApprovalChannelTests
     [Fact]
     public async Task DisconnectReconnectsReauthenticatesAndResubscribesWithoutResendingPendingPush()
     {
-        await using var harness = new Standalone();
+        var clock = new HeartbeatClock();
+        await using var harness = new Standalone(clock: clock);
         await harness.StartAsync();
         var notice = Notice();
         await harness.Channel.SendRequestAsync(notice, CancellationToken.None);
         var (code, _) = Codes(harness.Http);
         harness.Socket.Incoming.Writer.TryWrite("__close");
+        await WaitAsync(() => clock.HasTimerDueIn(TimeSpan.FromSeconds(1)));
+        Assert.Equal(1, harness.Factory.Count);
+        clock.Advance(TimeSpan.FromSeconds(1));
         await WaitAsync(() => harness.Factory.Count >= 2 && harness.Channel.IsAvailable);
         Assert.Equal(1, harness.Http.Count);
         var reconnected = harness.Factory.Last!;

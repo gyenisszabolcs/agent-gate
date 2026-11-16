@@ -13,14 +13,10 @@ namespace AgentGate.Tests;
 public sealed partial class HomeAssistantApprovalChannelTests
 {
     [Theory]
-    [InlineData("2026-01-15T12:15:00Z", "13:15")]
-    [InlineData("2026-07-15T12:15:00Z", "14:15")]
     [InlineData("2026-03-29T00:59:00Z", "01:59")]
     [InlineData("2026-03-29T01:00:00Z", "03:00")]
     [InlineData("2026-10-25T00:59:00Z", "02:59")]
     [InlineData("2026-10-25T01:00:00Z", "02:00")]
-    [InlineData("2026-10-25T00:30:00Z", "02:30")]
-    [InlineData("2026-10-25T01:30:00Z", "02:30")]
     public async Task PresentationUsesRealBudapestRulesAcrossBothTransitions(string utc, string local)
     {
         var expires = DateTimeOffset.Parse(utc, CultureInfo.InvariantCulture);

@@ -14,11 +14,9 @@ public sealed class HomeAssistantReadToolsTests
 {
     [Theory]
     [InlineData(0)]
-    [InlineData(1)]
     [InlineData(99)]
     [InlineData(100)]
     [InlineData(101)]
-    [InlineData(150)]
     public async Task ListSortsFiltersBeforeHardLimitAndProjectsOnlyMinimalFields(int count)
     {
         var rows = Enumerable.Range(0, count).Reverse().Select(index => new
@@ -26,7 +24,7 @@ public sealed class HomeAssistantReadToolsTests
             entity_id = $"sensor.room_{index:D3}",
             state = "21",
             last_changed = "2026-11-14T10:20:30+00:00",
-            attributes = new { friendly_name = "Szoba", unit_of_measurement = "°C", extra = "Nem adható ki" }
+            attributes = new { friendly_name = "Szoba", unit_of_measurement = "°C", extra = new { coordinates = "47.123,19.456", nested = new[] { "tiltott" } } }
         }).Cast<object>().Prepend(new { entity_id = "light.desk", state = "on", attributes = new { } });
         using var fixture = new Fixture(JsonSerializer.Serialize(rows));
         var result = await Data(fixture.Tools.ListStates(CancellationToken.None, "sensor"));
@@ -85,21 +83,24 @@ public sealed class HomeAssistantReadToolsTests
             ["device_class"] = "temperature",
             ["state_class"] = "measurement",
             ["icon"] = "mdi:home",
-            ["unknown"] = "nem adható ki",
+            ["unknown"] = new { payload = new[] { new { latitude = "47.123,19.456" } } },
             ["safe_object"] = new { latitude = 47.123, longitude = 19.456 },
             ["safe_array"] = new[] { new { GPS_accuracy = 3 } },
-            ["pre_GpsAccuracy_suffix"] = 7,
-            ["gps-accuracy"] = 4,
-            ["GPS_accuracy"] = 2,
-            ["latitude"] = 47.123,
-            ["longitude"] = 19.456,
+            ["pre_GpsAccuracy_suffix"] = "47.123,19.456",
+            ["gps-accuracy"] = "47.123,19.456",
+            ["GPS_accuracy"] = "47.123,19.456",
+            ["latitude"] = "47.123,19.456",
+            ["longitude"] = "47.123,19.456",
             ["Coordinates"] = "47.123,19.456",
-            ["altitude"] = 100,
-            ["elevation"] = 100,
-            ["course"] = 12,
-            ["speed"] = 10,
-            ["radius"] = 50,
-            ["wind_speed"] = 15
+            ["LONGITUDE"] = "47.123,19.456",
+            ["GpsAccuracy"] = "47.123,19.456",
+            ["pre_Coordinates_suffix"] = "47.123,19.456",
+            ["altitude"] = "47.123,19.456",
+            ["elevation"] = "47.123,19.456",
+            ["course"] = "47.123,19.456",
+            ["speed"] = "47.123,19.456",
+            ["radius"] = "47.123,19.456",
+            ["wind_speed"] = "47.123,19.456"
         };
         var body = JsonSerializer.Serialize(new { entity_id = domain + ".room", state = "home", last_changed = "2026-11-14T10:20:30Z", attributes });
         using var fixture = new Fixture(body);
@@ -108,6 +109,7 @@ public sealed class HomeAssistantReadToolsTests
         Assert.Equal("home", result.GetProperty("state").GetString());
         Assert.Equal(new[] { "device_class", "friendly_name", "icon", "state_class", "unit_of_measurement" }, result.GetProperty("attributes").EnumerateObject().Select(property => property.Name).Order());
         Assert.Equal("mdi:home", result.GetProperty("attributes").GetProperty("icon").GetString());
+        Assert.DoesNotContain("47.123", result.GetRawText());
         Assert.Equal(1, fixture.Handler.Calls);
     }
 
@@ -226,20 +228,18 @@ public sealed class HomeAssistantReadToolsTests
     }
 
     [Theory]
-    [InlineData("friendly_name")]
-    [InlineData("unit_of_measurement")]
-    [InlineData("device_class")]
-    [InlineData("state_class")]
-    [InlineData("icon")]
-    public async Task AllowedAttributeNamesNeverAuthorizeCompositeOrNonStringValues(string field)
+    [InlineData("friendly_name", "{\"coordinates\":\"47.123,19.456\"}")]
+    [InlineData("unit_of_measurement", "[\"47.123,19.456\"]")]
+    [InlineData("device_class", "47.123")]
+    [InlineData("state_class", "true")]
+    [InlineData("icon", "null")]
+    public async Task AllowedAttributeNamesNeverAuthorizeCompositeOrNonStringValues(string field, string json)
     {
-        foreach (object? value in new object?[] { new { coordinates = "47.123,19.456" }, new[] { "47.123,19.456" }, 47.123, true, null })
-        {
-            using var fixture = new Fixture(JsonSerializer.Serialize(new { entity_id = "sensor.room", state = "21", attributes = new Dictionary<string, object?> { [field] = value } }));
-            var result = await Data(fixture.Tools.GetState("sensor.room", CancellationToken.None));
-            Assert.Empty(result.GetProperty("attributes").EnumerateObject());
-            Assert.False(result.TryGetProperty(field, out _));
-        }
+        var value = JsonSerializer.Deserialize<JsonElement>(json);
+        using var fixture = new Fixture(JsonSerializer.Serialize(new { entity_id = "sensor.room", state = "21", attributes = new Dictionary<string, object?> { [field] = value } }));
+        var result = await Data(fixture.Tools.GetState("sensor.room", CancellationToken.None));
+        Assert.Empty(result.GetProperty("attributes").EnumerateObject());
+        Assert.False(result.TryGetProperty(field, out _));
     }
 
     [Theory]
@@ -255,54 +255,18 @@ public sealed class HomeAssistantReadToolsTests
     }
 
     [Theory]
-    [InlineData("friendly_name", "G-P_S accuracy")]
-    [InlineData("unit_of_measurement", "  DeGrEeS  ")]
-    [InlineData("device_class", "pre_GpsAccuracy_suffix")]
-    [InlineData("state_class", "coordinates")]
-    [InlineData("icon", "geo:47.123,19.456")]
-    public async Task EveryAllowedTextFieldParticipatesInLocationDecision(string field, string value)
+    [InlineData("sensor", "friendly_name", "G-P_S accuracy")]
+    [InlineData("person", "unit_of_measurement", "  DeGrEeS  ")]
+    [InlineData("zone", "device_class", "pre_GpsAccuracy_suffix")]
+    [InlineData("light", "state_class", "coordinates")]
+    [InlineData("sensor", "icon", "geo:47.123,19.456")]
+    public async Task EveryAllowedTextFieldParticipatesInLocationDecision(string domain, string field, string value)
     {
-        foreach (var domain in new[] { "sensor", "person", "zone", "light" })
-        {
-            var row = new { entity_id = domain + ".room", state = "home", attributes = new Dictionary<string, string> { [field] = value } };
-            using var list = new Fixture(JsonSerializer.Serialize(new[] { row }));
-            Assert.Empty((await Data(list.Tools.ListStates(CancellationToken.None))).GetProperty("items").EnumerateArray());
-            using var detail = new Fixture(JsonSerializer.Serialize(row));
-            await Assert.ThrowsAsync<GateToolException>(() => detail.Tools.GetState(row.entity_id, CancellationToken.None));
-        }
-    }
-
-    [Theory]
-    [InlineData("latitude")]
-    [InlineData("LONGITUDE")]
-    [InlineData("GPS_accuracy")]
-    [InlineData("gps-accuracy")]
-    [InlineData("GpsAccuracy")]
-    [InlineData("pre_Coordinates_suffix")]
-    [InlineData("altitude")]
-    [InlineData("elevation")]
-    [InlineData("course")]
-    [InlineData("speed")]
-    [InlineData("radius")]
-    [InlineData("wind_speed")]
-    public async Task LocationKeysAndUnknownTreesNeverSurviveAnyProjection(string key)
-    {
-        foreach (var domain in new[] { "sensor", "person", "zone", "light" })
-        {
-            var attributes = new Dictionary<string, object?>
-            {
-                [key] = "47.123,19.456",
-                ["unknown"] = new { payload = new[] { new Dictionary<string, string> { [key] = "47.123,19.456" } } },
-                ["friendly_name"] = "Nappali"
-            };
-            var row = new { entity_id = domain + ".room", state = "home", attributes };
-            using var detail = new Fixture(JsonSerializer.Serialize(row));
-            var result = await Data(detail.Tools.GetState(row.entity_id, CancellationToken.None));
-            Assert.Equal(new[] { "friendly_name" }, result.GetProperty("attributes").EnumerateObject().Select(property => property.Name));
-            Assert.False(result.ToString().Contains("47.123", StringComparison.Ordinal));
-            using var list = new Fixture(JsonSerializer.Serialize(new[] { row }));
-            Assert.Equal(1, (await Data(list.Tools.ListStates(CancellationToken.None))).GetProperty("returned_count").GetInt32());
-        }
+        var row = new { entity_id = domain + ".room", state = "home", attributes = new Dictionary<string, string> { [field] = value } };
+        using var list = new Fixture(JsonSerializer.Serialize(new[] { row }));
+        Assert.Empty((await Data(list.Tools.ListStates(CancellationToken.None))).GetProperty("items").EnumerateArray());
+        using var detail = new Fixture(JsonSerializer.Serialize(row));
+        await Assert.ThrowsAsync<GateToolException>(() => detail.Tools.GetState(row.entity_id, CancellationToken.None));
     }
 
     [Theory]

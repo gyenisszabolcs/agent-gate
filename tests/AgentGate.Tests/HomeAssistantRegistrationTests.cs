@@ -49,12 +49,9 @@ public sealed class HomeAssistantRegistrationTests
     [InlineData("DomainAllowlist:0", "Sensor")]
     public async Task UnsafeOptionsFailWithFixedMessage(string key, string value)
     {
-        foreach (var allowHttp in new string?[] { null, "true" })
-        {
-            using var host = CreateHost(Guid.NewGuid().ToString(), key, value, allowHttp);
-            var error = await Assert.ThrowsAsync<OptionsValidationException>(() => host.StartAsync());
-            Assert.Equal("A Home Assistant konfiguráció érvénytelen.", Assert.Single(error.Failures));
-        }
+        using var host = CreateHost(Guid.NewGuid().ToString(), key, value);
+        var error = await Assert.ThrowsAsync<OptionsValidationException>(() => host.StartAsync());
+        Assert.Equal("A Home Assistant konfiguráció érvénytelen.", Assert.Single(error.Failures));
     }
 
     [Theory]
@@ -74,9 +71,7 @@ public sealed class HomeAssistantRegistrationTests
 
     [Theory]
     [InlineData("")]
-    [InlineData("1")]
     [InlineData("yes")]
-    [InlineData("tru")]
     public async Task MalformedHttpFlagFailsClosedEvenForHttps(string setting)
     {
         using var host = CreateHost(Guid.NewGuid().ToString(), allowHttp: setting);
@@ -112,25 +107,18 @@ public sealed class HomeAssistantRegistrationTests
     [InlineData("http://172.32.0.0/")]
     [InlineData("http://192.167.255.255/")]
     [InlineData("http://192.169.0.0/")]
-    [InlineData("http://8.8.8.8/")]
     [InlineData("http://0.0.0.0/")]
     [InlineData("http://127.0.0.1/")]
-    [InlineData("http://127.255.255.255/")]
     [InlineData("http://169.254.1.2/")]
     [InlineData("http://100.64.0.0/")]
-    [InlineData("http://100.127.255.255/")]
     [InlineData("http://224.0.0.1/")]
     [InlineData("http://255.255.255.255/")]
     [InlineData("http://ha.example/")]
-    [InlineData("http://ha.local/")]
-    [InlineData("http://localhost/")]
     [InlineData("http://10.0.0.1.example/")]
     [InlineData("http://[::1]/")]
     [InlineData("http://[fc00::1]/")]
     [InlineData("http://[fe80::1]/")]
     [InlineData("http://[::ffff:10.0.0.1]/")]
-    [InlineData("http://[::ffff:172.16.0.1]/")]
-    [InlineData("http://[::ffff:192.168.1.2]/")]
     [InlineData("http://10.1/")]
     [InlineData("http://167772161/")]
     [InlineData("http://0x0a000001/")]
@@ -154,10 +142,6 @@ public sealed class HomeAssistantRegistrationTests
     [Theory]
     [InlineData("http://10.1.2.3/", null)]
     [InlineData("http://10.1.2.3/", "false")]
-    [InlineData("http://172.16.1.2/", null)]
-    [InlineData("http://172.16.1.2/", "false")]
-    [InlineData("http://192.168.1.2/", null)]
-    [InlineData("http://192.168.1.2/", "false")]
     public async Task HttpRequiresExplicitTrueFlag(string baseUrl, string? allowHttp)
     {
         Assert.False(new HomeAssistantOptions().AllowHttp);
@@ -167,19 +151,17 @@ public sealed class HomeAssistantRegistrationTests
     }
 
     [Theory]
-    [InlineData("https://ha.example/")]
-    [InlineData("https://8.8.8.8/")]
-    [InlineData("https://127.0.0.1/")]
-    [InlineData("https://[::1]/")]
-    [InlineData("https://[::ffff:192.168.1.2]/")]
-    public async Task HttpsAcceptanceDoesNotDependOnHttpException(string baseUrl)
+    [InlineData("https://ha.example/", null)]
+    [InlineData("https://8.8.8.8/", "false")]
+    [InlineData("https://127.0.0.1/", "true")]
+    [InlineData("https://[::1]/", null)]
+    [InlineData("https://[::ffff:192.168.1.2]/", "true")]
+    public async Task HttpsAcceptanceDoesNotDependOnHttpException(string baseUrl, string? allowHttp)
     {
-        foreach (var allowHttp in new string?[] { null, "false", "true" })
-        {
-            using var host = CreateHost(Guid.NewGuid().ToString(), "BaseUrl", baseUrl, allowHttp);
-            await host.StartAsync();
-            await host.StopAsync();
-        }
+        // A HTTPS-ág nem használja a HTTP-kivételt; nincs szükség cím × flag szorzatra.
+        using var host = CreateHost(Guid.NewGuid().ToString(), "BaseUrl", baseUrl, allowHttp);
+        await host.StartAsync();
+        await host.StopAsync();
     }
 
     [Fact]

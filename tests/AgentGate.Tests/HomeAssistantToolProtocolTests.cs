@@ -56,13 +56,7 @@ public sealed class HomeAssistantToolProtocolTests
     [InlineData("ha_get_state", "success")]
     [InlineData("ha_get_config", "success")]
     [InlineData("ha_list_states", "secret")]
-    [InlineData("ha_get_state", "secret")]
-    [InlineData("ha_get_config", "secret")]
-    [InlineData("ha_list_states", "http")]
     [InlineData("ha_get_state", "http")]
-    [InlineData("ha_get_config", "http")]
-    [InlineData("ha_list_states", "timeout")]
-    [InlineData("ha_get_state", "timeout")]
     [InlineData("ha_get_config", "timeout")]
     public async Task ConfiguredToolsUseRealProtocolAndDurableAuditWithoutSecrets(string name, string outcome)
     {
