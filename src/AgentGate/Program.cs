@@ -9,6 +9,7 @@ using AgentGate.Approval.HomeAssistant;
 using AgentGate.Integrations.HomeAssistant;
 
 var builder = WebApplication.CreateBuilder(args);
+AgentGate.GateConfiguration.AddStartupFile(builder.Configuration);
 // Az SDK 2.4.0 a filteren kívül nyers eszköznevet, Trace szinten teljes üzenettartalmat naplóz.
 // Az alkalmazás/ASP.NET naplója megmarad; az SDK szerverdiagnosztikáját a tartós audit váltja ki.
 builder.Services.PostConfigure<LoggerFilterOptions>(options =>
