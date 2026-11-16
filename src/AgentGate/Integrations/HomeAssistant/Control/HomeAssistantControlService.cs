@@ -1,0 +1,125 @@
+using System.Text.Json;
+using AgentGate.Policy;
+using AgentGate.Tools;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
+
+namespace AgentGate.Integrations.HomeAssistant.Control;
+
+public sealed class HomeAssistantControlService(IServiceProvider services, ControlPolicy policy)
+{
+    public ControlRequest Validate(IReadOnlyDictionary<string, JsonElement> arguments, RiskLevel risk)
+    {
+        var request = policy.Validate(arguments, risk);
+        if (!Client.IsEntityAllowed(request.EntityId)) throw ControlPolicy.Denied();
+        return request;
+    }
+    private HomeAssistantClient Client => services.GetService<HomeAssistantClient>() ?? throw new GateToolException("A Home Assistant nincs beállítva.");
+
+    public async Task<ControlRequest> PrepareAsync(IReadOnlyDictionary<string, JsonElement> arguments, RiskLevel risk, CancellationToken cancellationToken)
+    {
+        var request = Validate(arguments, risk);
+        await CheckFreshAsync(request, risk, cancellationToken);
+        Validate(arguments, risk);
+        if (await services.GetRequiredService<IKillSwitchStateSource>().IsEnabledAsync(cancellationToken)) throw ControlPolicy.Denied();
+        return request;
+    }
+
+    private static void RequireUniqueFields(JsonElement value)
+    {
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        if (value.ValueKind != JsonValueKind.Object || value.EnumerateObject().Any(p => !names.Add(p.Name))) throw ControlPolicy.Denied();
+    }
+
+    private async Task CheckFreshAsync(ControlRequest request, RiskLevel risk, CancellationToken cancellationToken)
+    {
+        if (request.Domain == "climate" && request.Service == "set_temperature")
+        {
+            var climate = await Client.GetStateAsync(request.EntityId, cancellationToken);
+            var attributes = climate.Attributes;
+            RequireUniqueFields(attributes);
+            static JsonElement Bound(JsonElement attributes, string name)
+            {
+                if (!attributes.TryGetProperty(name, out var value) || !ControlNumber.IsFinite(value)) throw ControlPolicy.Denied();
+                return value;
+            }
+            var min = Bound(attributes, "min_temp");
+            var max = Bound(attributes, "max_temp");
+            if (ControlNumber.Compare(min, max) > 0) throw ControlPolicy.Denied();
+            var hasUnit = false;
+            foreach (var name in new[] { "temperature_unit", "unit_of_measurement" })
+            {
+                if (!attributes.TryGetProperty(name, out var unit)) continue;
+                hasUnit = true;
+                if (unit.ValueKind != JsonValueKind.String || unit.GetString() != "°C") throw ControlPolicy.Denied();
+            }
+            if (!hasUnit)
+            {
+                var config = (await Client.GetConfigAsync(cancellationToken)).Data;
+                RequireUniqueFields(config);
+                if (!config.TryGetProperty("unit_system", out var units) || units.ValueKind != JsonValueKind.Object ||
+                    !units.TryGetProperty("temperature", out var unit) || unit.ValueKind != JsonValueKind.String || unit.GetString() != "°C") throw ControlPolicy.Denied();
+                RequireUniqueFields(units);
+            }
+            var requested = request.Data.GetProperty("temperature");
+            // A statikus 10–30 korlátot a policy már pontosan ellenőrizte; ez a másik metszetfeltétel.
+            if (ControlNumber.Compare(requested, min) < 0 || ControlNumber.Compare(requested, max) > 0) throw ControlPolicy.Denied();
+            return;
+        }
+        if (request.Domain != "cover") return;
+        var state = await Client.GetStateAsync(request.EntityId, cancellationToken);
+        RequireUniqueFields(state.Attributes);
+        if (!state.Attributes.TryGetProperty("device_class", out var value) || value.ValueKind != JsonValueKind.String) throw ControlPolicy.Denied();
+        var deviceClass = value.GetString();
+        var allowed = risk == RiskLevel.Control
+            ? new[] { "awning", "blind", "curtain", "damper", "shade", "shutter", "window" }
+            : new[] { "garage", "gate", "door" };
+        if (!allowed.Contains(deviceClass, StringComparer.Ordinal)) throw ControlPolicy.Denied();
+    }
+
+    public async Task<JsonElement> ExecuteAsync(IReadOnlyDictionary<string, JsonElement> arguments, RiskLevel risk, CancellationToken cancellationToken)
+    {
+        var request = Validate(arguments, risk);
+        var attempted = false;
+        try
+        {
+            await Client.PostServiceAsync(request, async ct =>
+            {
+                await CheckFreshAsync(request, risk, ct);
+                Validate(arguments, risk);
+                if (await services.GetRequiredService<IKillSwitchStateSource>().IsEnabledAsync(ct)) throw ControlPolicy.Denied();
+                if (!services.GetRequiredService<ControlRateLimiter>().TryAcquire(request.EntityId))
+                    throw new ControlRateLimitException();
+                attempted = true;
+            }, cancellationToken);
+            var state = await Client.GetStateAsync(request.EntityId, cancellationToken);
+            if (!HomeAssistantReadProjection.IsSafe(state)) throw ControlPolicy.Denied();
+            var result = HomeAssistantReadProjection.State(state);
+            result["attributes"] = HomeAssistantReadProjection.Attributes(state.Attributes);
+            return JsonSerializer.SerializeToElement(result);
+        }
+        catch (Exception) when (attempted)
+        {
+            throw new GateToolException("A vezérlési kísérlet vagy visszaolvasás sikertelen; a hatás megtörténhetett. Ez nem visszagörgetés; nincs újrapróbálás.");
+        }
+    }
+}
+
+public static class HomeAssistantControlRegistration
+{
+    private sealed class StartupOptions;
+    public static IServiceCollection AddHomeAssistantControl(this IServiceCollection services, IConfiguration configuration)
+    {
+        services.TryAddSingleton(_ => ControlPolicy.FromConfiguration(configuration));
+        services.TryAddSingleton<HomeAssistantControlService>();
+        services.TryAddSingleton<ControlRateLimiter>();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<AgentGate.Approval.IApprovalOperationHandler, HomeAssistantControlOperation>());
+        if (configuration.GetChildren().Any(c => c.Key.Equals("HomeAssistantControl", StringComparison.OrdinalIgnoreCase)))
+            services.AddOptions<StartupOptions>().Configure<ControlPolicy, IServiceProvider>((_, policy, provider) =>
+            {
+                if (policy.Enabled && provider.GetService<HomeAssistantClient>() is null)
+                    throw new OptionsValidationException(Options.DefaultName, typeof(ControlPolicy), [ControlPolicy.ConfigurationError]);
+            }).ValidateOnStart();
+        return services;
+    }
+}

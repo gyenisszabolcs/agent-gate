@@ -92,11 +92,22 @@ public sealed class HomeAssistantClient : IDisposable
 
     private static HomeAssistantException InvalidResponse() => new("A Home Assistant válasz érvénytelen.");
 
-    private async Task<JsonElement> ReadAsync(string path, CancellationToken cancellationToken)
+    internal Task<JsonElement> PostServiceAsync(Control.ControlRequest request, Func<CancellationToken, Task> beforeSend, CancellationToken cancellationToken)
+    {
+        var body = request.Data.EnumerateObject().ToDictionary(p => p.Name, p => p.Value);
+        body.Add("entity_id", JsonSerializer.SerializeToElement(request.EntityId));
+        return SendAsync("/api/services/" + request.Domain + "/" + request.Service, cancellationToken,
+            JsonSerializer.Serialize(body), beforeSend);
+    }
+
+    private Task<JsonElement> ReadAsync(string path, CancellationToken cancellationToken) => SendAsync(path, cancellationToken);
+
+    private async Task<JsonElement> SendAsync(string path, CancellationToken cancellationToken, string? body = null, Func<CancellationToken, Task>? beforeSend = null)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(timeout);
         var ct = deadline.Token;
+        Control.ControlRateLimitException? quotaRejection = null;
         try
         {
             ct.ThrowIfCancellationRequested();
@@ -104,8 +115,20 @@ public sealed class HomeAssistantClient : IDisposable
             if (string.IsNullOrEmpty(token) || token.Length > 16384 ||
                 !Regex.IsMatch(token, @"\A[A-Za-z0-9\-._~+/]+=*\z", RegexOptions.CultureInvariant))
                 throw new InvalidOperationException();
-            using var request = new HttpRequestMessage(HttpMethod.Get, path);
+            using var request = new HttpRequestMessage(body is null ? HttpMethod.Get : HttpMethod.Post, path);
+            if (body is not null) request.Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            if (beforeSend is not null)
+            {
+                try { await beforeSend(ct); }
+                catch (Control.ControlRateLimitException exception)
+                {
+                    // Csak a helyi előfeltételből érkező, állandó kvótahiba léphet át a transporthatáron.
+                    quotaRejection = exception;
+                    throw;
+                }
+            }
+            ct.ThrowIfCancellationRequested();
             using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
             if (!response.IsSuccessStatusCode) throw new HttpRequestException();
             await using var stream = await response.Content.ReadAsStreamAsync(ct);
@@ -128,6 +151,10 @@ public sealed class HomeAssistantClient : IDisposable
         catch (Exception) when (deadline.IsCancellationRequested)
         {
             throw new HomeAssistantException("A Home Assistant lekérés időkorlátja lejárt.");
+        }
+        catch (Control.ControlRateLimitException exception) when (ReferenceEquals(exception, quotaRejection))
+        {
+            throw;
         }
         catch (Exception)
         {

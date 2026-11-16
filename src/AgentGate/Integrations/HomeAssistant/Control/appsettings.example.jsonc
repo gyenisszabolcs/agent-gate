@@ -1,0 +1,78 @@
+{
+  // Fiktív telepítési példa, nem automatikus éles engedély. Titokérték nincs benne.
+  // A TokenSecretId kizárólag a futásidőben feloldandó titok hivatkozása.
+  "HomeAssistant": {
+    "BaseUrl": "https://ha.example/",
+    "AllowHttp": false,
+    "TokenSecretId": "7da7370c-49d2-44da-803a-441c7b41b0a8",
+    "DomainAllowlist": ["light", "switch", "sensor", "binary_sensor", "climate", "cover", "weather", "sun", "scene", "input_boolean", "person", "zone", "lock"],
+    "Timeout": "00:00:10"
+  },
+  "HomeAssistantControl": {
+    "Domains": {
+      "light": {
+        "AllowAllEntities": true,
+        "EntityAllowlist": [],
+        "ControlServices": ["turn_on", "turn_off", "toggle"],
+        "SensitiveControlServices": []
+      },
+      "switch": {
+        "AllowAllEntities": false,
+        "EntityAllowlist": [],
+        "ControlServices": ["turn_on", "turn_off", "toggle"],
+        "SensitiveControlServices": []
+      },
+      "cover": {
+        "AllowAllEntities": true,
+        "EntityAllowlist": [],
+        "ControlServices": ["open_cover", "close_cover", "stop_cover", "set_cover_position"],
+        "SensitiveControlServices": ["open_cover", "close_cover", "stop_cover"]
+      },
+      "climate": {
+        "AllowAllEntities": true,
+        "EntityAllowlist": [],
+        "ControlServices": ["set_temperature", "set_hvac_mode", "turn_on", "turn_off"],
+        "SensitiveControlServices": []
+      },
+      "scene": {
+        "AllowAllEntities": true,
+        "EntityAllowlist": [],
+        "ControlServices": ["turn_on"],
+        "SensitiveControlServices": []
+      },
+      "input_boolean": {
+        "AllowAllEntities": true,
+        "EntityAllowlist": [],
+        "ControlServices": ["turn_on", "turn_off", "toggle"],
+        "SensitiveControlServices": []
+      },
+      "lock": {
+        "AllowAllEntities": true,
+        "EntityAllowlist": [],
+        "ControlServices": [],
+        "SensitiveControlServices": ["lock", "unlock"]
+      }
+    },
+    "EntityDenylist": [],
+    "HvacModeAllowlist": ["off", "heat", "cool", "auto"],
+    "RateLimit": {
+      "PerEntityPerMinute": 6,
+      "GlobalPerMinute": 60
+    }
+  },
+  // A már meglévő jóváhagyási csatorna; saját HTTP/WS életciklusa nem a vezérlő kliensé.
+  "HomeAssistantApproval": {
+    "BaseUrl": "https://ha.example/",
+    "AllowHttp": false,
+    "TokenSecretId": "7da7370c-49d2-44da-803a-441c7b41b0a8",
+    "NotifyService": "notify.mobile_app_fiktiv_admin",
+    "ExpectedUserId": "fiktiv_admin_user",
+    "ExpectedDeviceId": "fiktiv_admin_device",
+    "TimeoutSeconds": 5,
+    "MaxIdleSeconds": 60
+  },
+  "Approval": { "LifetimeMinutes": 15, "SendTimeoutSeconds": 5 },
+  "Audit": { "DatabasePath": "/var/lib/agentgate/audit.db", "Caller": "mikaela" },
+  // A fájlt az üzemeltető kezeli, kezdetben zártan; a példa nem hozza létre.
+  "KillSwitch": { "Path": "/var/lib/agentgate/kill-switch.json" }
+}

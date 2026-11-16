@@ -175,12 +175,14 @@ public sealed class ApprovalGate(
                     using var completion = new CancellationTokenSource(TimeSpan.FromSeconds(5));
                     await store.CompleteAsync(callId, "Succeeded", 0, null, completion.Token);
                 }
-                catch (Exception)
+                catch (Exception exception)
                 {
                     lock (pending.Sync)
                     {
                         pending.State = ApprovalState.Failed;
-                        pending.Result = "A jóváhagyott művelet vagy az audit lezárása sikertelen; ez nem visszagörgetés.";
+                        pending.Result = !completionAttempted && exception is AgentGate.Integrations.HomeAssistant.Control.ControlRateLimitException
+                            ? AgentGate.Integrations.HomeAssistant.Control.ControlRateLimitException.SafeMessage
+                            : "A jóváhagyott művelet vagy az audit lezárása sikertelen; ez nem visszagörgetés.";
                     }
                     if (auditStarted && !completionAttempted)
                     {
@@ -315,7 +317,7 @@ public sealed class ApprovalGate(
         var handler = handlers.SingleOrDefault(item => item.Tool == tool && item.Risk == risk);
         if (handler is null)
             return null;
-        var operation = handler.Prepare(arguments);
+        var operation = await handler.PrepareAsync(arguments, cancellationToken);
         if (operation.Tool != tool || operation.Risk != risk)
             return null;
         var summary = JsonSerializer.Serialize(SecretRedactor.RedactParameters(operation.Parameters
