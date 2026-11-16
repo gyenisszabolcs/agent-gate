@@ -74,5 +74,5 @@
   "Approval": { "LifetimeMinutes": 15, "SendTimeoutSeconds": 5 },
   "Audit": { "DatabasePath": "/var/lib/agentgate/audit.db", "Caller": "mikaela" },
   // A fájlt az üzemeltető kezeli, kezdetben zártan; a példa nem hozza létre.
-  "KillSwitch": { "Path": "/var/lib/agentgate/kill-switch.json" }
+  "KillSwitch": { "Path": "/etc/agentgate/kill-switch.json" }
 }
