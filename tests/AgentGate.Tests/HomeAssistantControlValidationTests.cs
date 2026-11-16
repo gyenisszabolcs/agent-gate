@@ -27,6 +27,8 @@ public sealed class HomeAssistantControlValidationTests
         foreach (var pair in new[] { ("light", "turn_off"), ("switch", "toggle"), ("climate", "turn_on"), ("climate", "turn_off"), ("cover", "open_cover"), ("scene", "turn_on"), ("input_boolean", "toggle") }) yield return [pair.Item1, pair.Item2, "{\"brightness_pct\":1}"];
         yield return ["climate", "set_temperature", "{\"temperature\":20,\"min_temp\":10}"];
         yield return ["climate", "set_temperature", "{\"temperature\":20,\"temperature_unit\":\"°C\"}"];
+        yield return ["light", "turn_on", "{\"area_id\":\"room\"}"];
+        yield return ["light", "turn_on", "{\"device_id\":\"room\"}"];
     }
     [Theory]
     [MemberData(nameof(InvalidData))]
@@ -39,6 +41,19 @@ public sealed class HomeAssistantControlValidationTests
         Assert.Empty(f.Channel.Requests);
         Assert.Equal(0, f.Secrets.Calls);
     }
+    [Fact]
+    public async Task MalformedSensitiveDataNeverReachesHttpOrPush()
+    {
+        await using var f = new ControlFixture();
+        // Engedélyezett sensitive szolgáltatás: nem egy korábbi domain/risk tiltás bizonyít.
+        using var reply = await f.Call("ha_sensitive_control", "lock", "unlock",
+            "{\"target\":{\"entity_id\":\"lock.other\"}}");
+        Assert.True(ControlFixture.Failed(reply));
+        Assert.Empty(f.Calls);
+        Assert.Empty(f.Channel.Requests);
+        Assert.Equal(0, f.Secrets.Calls);
+    }
+
     [Theory]
     [InlineData("alarm_control_panel", "alarm_disarm")]
     [InlineData("light", "create")]
