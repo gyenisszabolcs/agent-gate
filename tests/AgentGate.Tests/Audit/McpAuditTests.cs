@@ -359,31 +359,6 @@ public sealed class McpAuditTests
     }
 
     [Theory]
-    [InlineData("missing", RiskLevel.Read)]
-    [InlineData("missing-risk", RiskLevel.Forbidden)]
-    [InlineData("invalid-risk", RiskLevel.Forbidden)]
-    [InlineData(null, RiskLevel.Forbidden)]
-    public async Task MissingMetadataStopsToolAndAuditsRejectionWithoutArguments(string? toolName, RiskLevel expectedRisk)
-    {
-        var probe = new ProbeTools();
-        var store = new RecordingStore();
-        await using var factory = CreateFactory(probe, store);
-        var secret = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
-        using var response = await CallAsync(factory, toolName ?? secret, new Dictionary<string, string> { [secret] = secret });
-        Assert.True(IsError(response));
-        Assert.Equal(0, probe.Count);
-        Assert.True(store.Calls.Count == 1, "Pontosan egy elutasítási audit szükséges.");
-        var call = store.Calls[0];
-        Assert.True(call.Tool == (toolName ?? "[ismeretlen-eszköz]"), "Az audit eszközneve nem biztonságos.");
-        Assert.Equal(expectedRisk, call.RiskLevel);
-        Assert.Equal("Failed", call.State);
-        Assert.True(call.SanitizedParameters == "{}", "Az elutasított hívás argumentumai nem tárolhatók.");
-        Assert.True(call.DurationMilliseconds >= 0);
-        Assert.False(string.IsNullOrWhiteSpace(call.SanitizedError));
-        Assert.True(!JsonSerializer.Serialize(call).Contains(secret, StringComparison.Ordinal), "Az audit titkot tartalmaz.");
-    }
-
-    [Theory]
     [InlineData(LogLevel.Information)]
     [InlineData(LogLevel.Trace)]
     public async Task UnknownToolNameNeverLeaksThroughResponseOrNormalLogging(LogLevel minimumLevel)

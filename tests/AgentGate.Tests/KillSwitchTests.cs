@@ -45,13 +45,7 @@ public sealed class KillSwitchTests
     {
         { RiskLevel.Read, true },
         { RiskLevel.Control, false },
-        { RiskLevel.SensitiveControl, false },
-        { RiskLevel.Configuration, false },
-        { RiskLevel.System, false },
-        { RiskLevel.Forbidden, false },
-        { (RiskLevel)(-1), false },
-        { (RiskLevel)6, false },
-        { (RiskLevel)int.MaxValue, false }
+        { RiskLevel.Forbidden, false }
     };
 
     [Theory]

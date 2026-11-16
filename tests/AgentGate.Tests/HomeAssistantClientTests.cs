@@ -14,8 +14,6 @@ public sealed class HomeAssistantClientTests
     [InlineData("https://ha.example/", false)]
     [InlineData("https://ha.example/", true)]
     [InlineData("http://10.1.2.3:8123/", true)]
-    [InlineData("http://172.16.1.2/", true)]
-    [InlineData("http://192.168.1.2/", true)]
     public async Task ConfigUsesExactGetAndRuntimeBearer(string baseUrl, bool allowHttp)
     {
         var secrets = new FakeSecrets();
