@@ -40,7 +40,12 @@ public interface IApprovalOperationHandler
 {
     string Tool { get; }
     RiskLevel Risk { get; }
-    PreparedOperation Prepare(IReadOnlyDictionary<string, JsonElement> arguments);
+    PreparedOperation Prepare(IReadOnlyDictionary<string, JsonElement> arguments) => throw new InvalidOperationException("Aszinkron előkészítés szükséges.");
+    ValueTask<PreparedOperation> PrepareAsync(IReadOnlyDictionary<string, JsonElement> arguments, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.FromResult(Prepare(arguments));
+    }
     Task<string> ExecuteAsync(PreparedOperation operation, CancellationToken cancellationToken);
 }
 

@@ -6,7 +6,7 @@ A főprogramba feltételesen bekötött kliens három olvasási művelete:
 - `GetStatesAsync(ct)` → `GET /api/states`, az összes engedélyezett entitás `HomeAssistantState` DTO-ja.
 - `GetStateAsync(entityId, ct)` → `GET /api/states/{entity_id}`, egy DTO.
 
-Nincs általános HTTP-végpont, írás, titoknév szerinti keresés vagy közvetlen Bitwarden-hívás.
+Nincs általános HTTP-végpont, titoknév szerinti keresés vagy közvetlen Bitwarden-hívás. Az olvasási eszközök nem írnak; a külön, opcionális [vezérlési modul](Control/README.md) két szűk írási eszköze ugyanezen kliens ellenőrzött transportját használja.
 
 ## Regisztráció és konfiguráció
 

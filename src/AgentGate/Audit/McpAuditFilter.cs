@@ -46,6 +46,19 @@ public sealed class McpAuditFilter(IServiceProvider services, IOptions<AuditOpti
                 parameters["[kihagyva]"] = "[kihagyva]";
             }
         }
+        if (!rejected && (tool!.ProtocolTool.Name is "ha_control" or "ha_sensitive_control") && request.Params.Arguments is { } controlArguments)
+        {
+            // Csak e két eszköz teljesen validált, zárt sémájú skalárjai; nyers objektumot soha.
+            parameters.Remove("data");
+            try
+            {
+                var policy = services.GetRequiredService<AgentGate.Integrations.HomeAssistant.Control.ControlPolicy>();
+                var normalized = policy.Validate(controlArguments.ToDictionary(p => p.Key, p => p.Value), risk);
+                foreach (var field in normalized.Data.EnumerateObject())
+                    parameters["data." + field.Name] = field.Value.ValueKind == JsonValueKind.String ? field.Value.GetString() : field.Value.GetRawText();
+            }
+            catch (AgentGate.Tools.GateToolException) { parameters["[kihagyva]"] = "[kihagyva]"; }
+        }
         var call = new AuditCall(Guid.NewGuid(), DateTimeOffset.UtcNow, SecretRedactor.RedactText(options.Value.Caller)!,
             tool?.ProtocolTool.Name ?? "[ismeretlen-eszköz]", risk, JsonSerializer.Serialize(SecretRedactor.RedactParameters(parameters)));
         IAuditStore store;
@@ -77,6 +90,12 @@ public sealed class McpAuditFilter(IServiceProvider services, IOptions<AuditOpti
                 if (rejected)
                 {
                     result = Error("A vészleállító policy letiltotta az eszköz végrehajtását.");
+                }
+                else if ((tool!.ProtocolTool.Name is "ha_control" or "ha_sensitive_control") &&
+                    request.Params.Arguments?.Keys.Any(name => name is not ("domain" or "service" or "entity_id" or "data")) == true)
+                {
+                    rejected = true;
+                    result = Error("A Home Assistant vezérlési kérés nem engedélyezett.");
                 }
                 else if (risk is RiskLevel.SensitiveControl or RiskLevel.Configuration or RiskLevel.System)
                 {
@@ -110,6 +129,11 @@ public sealed class McpAuditFilter(IServiceProvider services, IOptions<AuditOpti
         {
             state = "Cancelled";
             result = Error("Az eszközhívás megszakadt.");
+        }
+        catch (AgentGate.Integrations.HomeAssistant.Control.ControlRateLimitException)
+        {
+            state = "Failed";
+            result = Error(AgentGate.Integrations.HomeAssistant.Control.ControlRateLimitException.SafeMessage);
         }
         catch (AgentGate.Tools.GateToolException exception)
         {
