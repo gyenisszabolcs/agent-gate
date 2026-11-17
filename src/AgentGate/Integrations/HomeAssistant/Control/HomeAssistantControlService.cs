@@ -8,10 +8,13 @@ namespace AgentGate.Integrations.HomeAssistant.Control;
 
 public sealed class HomeAssistantControlService(IServiceProvider services, ControlPolicy policy)
 {
+    // Egy folyamaton belül a hangerőállítás és felolvasás közé más gate-médiaművelet nem ékelődhet.
+    private readonly SemaphoreSlim mediaExecution = new(1, 1);
     public ControlRequest Validate(IReadOnlyDictionary<string, JsonElement> arguments, RiskLevel risk)
     {
         var request = policy.Validate(arguments, risk);
         if (!Client.IsEntityAllowed(request.EntityId)) throw ControlPolicy.Denied();
+        if (request.Domain == "media_player" && request.Service == "speak") policy.Media.CheckTime(risk, services.GetRequiredService<TimeProvider>());
         return request;
     }
     private HomeAssistantClient Client => services.GetService<HomeAssistantClient>() ?? throw new GateToolException("A Home Assistant nincs beállítva.");
@@ -80,6 +83,72 @@ public sealed class HomeAssistantControlService(IServiceProvider services, Contr
     public async Task<JsonElement> ExecuteAsync(IReadOnlyDictionary<string, JsonElement> arguments, RiskLevel risk, CancellationToken cancellationToken)
     {
         var request = Validate(arguments, risk);
+        if (request.Domain != "media_player") return await ExecuteCoreAsync(arguments, risk, cancellationToken);
+        await mediaExecution.WaitAsync(cancellationToken);
+        try
+        {
+            return request.Service == "speak"
+                ? await SpeakAsync(arguments, risk, cancellationToken)
+                : await ExecuteCoreAsync(arguments, risk, cancellationToken);
+        }
+        finally { mediaExecution.Release(); }
+    }
+
+    private async Task<JsonElement> SpeakAsync(IReadOnlyDictionary<string, JsonElement> arguments, RiskLevel risk, CancellationToken cancellationToken)
+    {
+        var request = Validate(arguments, risk);
+        var attempted = false;
+        TtsRateLimiter.Reservation? reservation = null;
+        try
+        {
+            async Task Guard(CancellationToken ct)
+            {
+                Validate(arguments, risk);
+                if (await services.GetRequiredService<IKillSwitchStateSource>().IsEnabledAsync(ct)) throw ControlPolicy.Denied();
+                Validate(arguments, risk);
+            }
+            var volume = request.Data.GetProperty("volume_level");
+            var volumeRequest = new ControlRequest("media_player", "volume_set", request.EntityId,
+                JsonSerializer.SerializeToElement(new { volume_level = volume }));
+            await Client.PostServiceAsync(volumeRequest, async ct =>
+            {
+                await Guard(ct);
+                reservation = services.GetRequiredService<TtsRateLimiter>().TryReserve();
+                if (reservation is null || !services.GetRequiredService<ControlRateLimiter>().TryAcquire(request.EntityId)) throw new ControlRateLimitException();
+                attempted = true;
+            }, cancellationToken);
+            // A HA elfogadó válasza nem bizonyítja, hogy az eszköz tényleg átvette a hangerőt.
+            var state = await Client.GetStateAsync(request.EntityId, cancellationToken);
+            RequireUniqueFields(state.Attributes);
+            if (state.State is "unknown" or "unavailable" || !state.Attributes.TryGetProperty("volume_level", out var actual) ||
+                !policy.Media.AllowsVolume(actual) || ControlNumber.Compare(actual, volume) > 0) throw ControlPolicy.Denied();
+            var speech = new ControlRequest("tts", "speak", policy.Media.EngineEntityId!, JsonSerializer.SerializeToElement(new
+            {
+                media_player_entity_id = request.EntityId,
+                message = request.Data.GetProperty("message").GetString(),
+                cache = false
+            }));
+            await Client.PostServiceAsync(speech, async ct =>
+            {
+                await Guard(ct);
+                reservation!.Complete();
+            }, cancellationToken);
+            return JsonSerializer.SerializeToElement(new { entity_id = request.EntityId, service = "speak", volume_level = volume, status = "elküldve" });
+        }
+        catch (TtsQuietHoursException) when (attempted)
+        {
+            throw new GateToolException(TtsQuietHoursException.SafeMessage + " A hangerőállítás már megtörténhetett; nincs visszagörgetés vagy újrapróbálás.");
+        }
+        catch (Exception) when (attempted)
+        {
+            throw new GateToolException("A felolvasási kísérlet vagy hangerő-ellenőrzés sikertelen; a hatás megtörténhetett. Ez nem visszagörgetés; nincs újrapróbálás.");
+        }
+        finally { reservation?.Complete(); }
+    }
+
+    private async Task<JsonElement> ExecuteCoreAsync(IReadOnlyDictionary<string, JsonElement> arguments, RiskLevel risk, CancellationToken cancellationToken)
+    {
+        var request = Validate(arguments, risk);
         var attempted = false;
         try
         {
@@ -113,6 +182,7 @@ public static class HomeAssistantControlRegistration
         services.TryAddSingleton(_ => ControlPolicy.FromConfiguration(configuration));
         services.TryAddSingleton<HomeAssistantControlService>();
         services.TryAddSingleton<ControlRateLimiter>();
+        services.TryAddSingleton<TtsRateLimiter>();
         services.TryAddEnumerable(ServiceDescriptor.Singleton<AgentGate.Approval.IApprovalOperationHandler, HomeAssistantControlOperation>());
         if (configuration.GetChildren().Any(c => c.Key.Equals("HomeAssistantControl", StringComparison.OrdinalIgnoreCase)))
             services.AddOptions<StartupOptions>().Configure<ControlPolicy, IServiceProvider>((_, policy, provider) =>
