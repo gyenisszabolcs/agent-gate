@@ -27,10 +27,10 @@ public sealed class HomeAssistantControlTools(AgentGate.Integrations.HomeAssista
         return new CallToolResult { StructuredContent = result, Content = [new TextContentBlock { Text = result.GetRawText() }] };
     }
 
-    [ToolAuditParameters("domain", "service", "entity_id", "data")]
+    [ToolAuditParameters("domain", "service", "entity_id", "data", "tts_engine")]
     [ToolRisk(RiskLevel.SensitiveControl)]
     [McpServerTool(Name = "ha_sensitive_control", ReadOnly = false, Destructive = true, OpenWorld = false, UseStructuredContent = true)]
-    [Description("Egy engedélyezett zár vagy érzékeny cover vezérlése a gate jóváhagyásával.")]
+    [Description("Engedélyezett zár, érzékeny cover vagy media_player speak felolvasás a gate jóváhagyásával.")]
     public Task<CallToolResult> SensitiveControl(string domain, string service, string entity_id, CancellationToken cancellationToken, JsonElement? data = null) =>
         throw new GateToolException("A művelet csak a jóváhagyási kapun hajtható végre.");
 }

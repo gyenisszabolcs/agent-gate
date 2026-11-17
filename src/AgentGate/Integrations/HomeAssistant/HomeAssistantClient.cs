@@ -108,6 +108,7 @@ public sealed class HomeAssistantClient : IDisposable
         deadline.CancelAfter(timeout);
         var ct = deadline.Token;
         Control.ControlRateLimitException? quotaRejection = null;
+        Control.TtsQuietHoursException? quietRejection = null;
         try
         {
             ct.ThrowIfCancellationRequested();
@@ -125,6 +126,11 @@ public sealed class HomeAssistantClient : IDisposable
                 {
                     // Csak a helyi előfeltételből érkező, állandó kvótahiba léphet át a transporthatáron.
                     quotaRejection = exception;
+                    throw;
+                }
+                catch (Control.TtsQuietHoursException exception)
+                {
+                    quietRejection = exception;
                     throw;
                 }
             }
@@ -153,6 +159,10 @@ public sealed class HomeAssistantClient : IDisposable
             throw new HomeAssistantException("A Home Assistant lekérés időkorlátja lejárt.");
         }
         catch (Control.ControlRateLimitException exception) when (ReferenceEquals(exception, quotaRejection))
+        {
+            throw;
+        }
+        catch (Control.TtsQuietHoursException exception) when (ReferenceEquals(exception, quietRejection))
         {
             throw;
         }

@@ -55,7 +55,11 @@ public sealed class McpAuditFilter(IServiceProvider services, IOptions<AuditOpti
                 var policy = services.GetRequiredService<AgentGate.Integrations.HomeAssistant.Control.ControlPolicy>();
                 var normalized = policy.Validate(controlArguments.ToDictionary(p => p.Key, p => p.Value), risk);
                 foreach (var field in normalized.Data.EnumerateObject())
-                    parameters["data." + field.Name] = field.Value.ValueKind == JsonValueKind.String ? field.Value.GetString() : field.Value.GetRawText();
+                    parameters["data." + field.Name] = field.Name == "message" ? SecretRedactor.RedactText(field.Value.GetString()) :
+                        field.Value.ValueKind == JsonValueKind.String ? field.Value.GetString() : field.Value.GetRawText();
+                if (normalized.Domain == "media_player" && normalized.Service == "speak" &&
+                    controlArguments.TryGetValue("data", out var ttsData) && ttsData.TryGetProperty("message", out var text))
+                    parameters["data.text_length"] = text.GetString()!.Length.ToString(System.Globalization.CultureInfo.InvariantCulture);
             }
             catch (AgentGate.Tools.GateToolException) { parameters["[kihagyva]"] = "[kihagyva]"; }
         }
@@ -134,6 +138,11 @@ public sealed class McpAuditFilter(IServiceProvider services, IOptions<AuditOpti
         {
             state = "Failed";
             result = Error(AgentGate.Integrations.HomeAssistant.Control.ControlRateLimitException.SafeMessage);
+        }
+        catch (AgentGate.Integrations.HomeAssistant.Control.TtsQuietHoursException)
+        {
+            state = "Failed";
+            result = Error(AgentGate.Integrations.HomeAssistant.Control.TtsQuietHoursException.SafeMessage);
         }
         catch (AgentGate.Tools.GateToolException exception)
         {

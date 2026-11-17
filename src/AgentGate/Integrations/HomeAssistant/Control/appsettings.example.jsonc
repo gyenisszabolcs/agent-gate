@@ -5,7 +5,7 @@
     "BaseUrl": "https://ha.example/",
     "AllowHttp": false,
     "TokenSecretId": "7da7370c-49d2-44da-803a-441c7b41b0a8",
-    "DomainAllowlist": ["light", "switch", "sensor", "binary_sensor", "climate", "cover", "weather", "sun", "scene", "input_boolean", "person", "zone", "lock"],
+    "DomainAllowlist": ["light", "switch", "sensor", "binary_sensor", "climate", "cover", "weather", "sun", "scene", "input_boolean", "person", "zone", "lock", "media_player"],
     "Timeout": "00:00:10"
   },
   "HomeAssistantControl": {
@@ -46,6 +46,12 @@
         "ControlServices": ["turn_on", "turn_off", "toggle"],
         "SensitiveControlServices": []
       },
+      "media_player": {
+        "AllowAllEntities": false,
+        "EntityAllowlist": ["media_player.nappali"],
+        "ControlServices": ["turn_on", "turn_off", "media_play", "media_pause", "media_stop", "media_next_track", "media_previous_track", "volume_mute", "volume_set", "speak"],
+        "SensitiveControlServices": ["speak"]
+      },
       "lock": {
         "AllowAllEntities": true,
         "EntityAllowlist": [],
@@ -55,6 +61,13 @@
     },
     "EntityDenylist": [],
     "HvacModeAllowlist": ["off", "heat", "cool", "auto"],
+    "MediaPlayerMaxVolume": 0.6,
+    "Tts": {
+      "EngineEntityId": "tts.fiktiv_motor",
+      "QuietHoursStart": "22:00",
+      "QuietHoursEnd": "07:00",
+      "TimeZone": "Europe/Budapest"
+    },
     "RateLimit": {
       "PerEntityPerMinute": 6,
       "GlobalPerMinute": 60

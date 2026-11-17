@@ -21,8 +21,9 @@ public sealed class ControlPolicy
     public bool Enabled { get; }
     public int PerEntityPerMinute { get; }
     public int GlobalPerMinute { get; }
+    public TtsPolicy Media { get; }
 
-    private ControlPolicy(bool enabled, Dictionary<string, DomainPolicy> domains, string[] denied, string[] hvac, int perEntity, int global)
+    private ControlPolicy(bool enabled, Dictionary<string, DomainPolicy> domains, string[] denied, string[] hvac, int perEntity, int global, TtsPolicy media)
     {
         Enabled = enabled;
         this.domains = domains.ToFrozenDictionary(StringComparer.Ordinal);
@@ -30,6 +31,7 @@ public sealed class ControlPolicy
         this.hvac = hvac.ToFrozenSet(StringComparer.Ordinal);
         PerEntityPerMinute = perEntity;
         GlobalPerMinute = global;
+        Media = media;
     }
 
     public static string[] MaximumServices(string domain, RiskLevel risk) => (domain, risk) switch
@@ -38,6 +40,8 @@ public sealed class ControlPolicy
         ("cover", RiskLevel.Control) => ["open_cover", "close_cover", "stop_cover", "set_cover_position"],
         ("climate", RiskLevel.Control) => ["set_temperature", "set_hvac_mode", "turn_on", "turn_off"],
         ("scene", RiskLevel.Control) => ["turn_on"],
+        ("media_player", RiskLevel.Control) => ["turn_on", "turn_off", "media_play", "media_pause", "media_stop", "media_next_track", "media_previous_track", "volume_mute", "volume_set", "speak"],
+        ("media_player", RiskLevel.SensitiveControl) => ["speak"],
         ("lock", RiskLevel.SensitiveControl) => ["lock", "unlock"],
         ("cover", RiskLevel.SensitiveControl) => ["open_cover", "close_cover", "stop_cover"],
         _ => []
@@ -67,8 +71,8 @@ public sealed class ControlPolicy
     public static ControlPolicy FromConfiguration(IConfiguration configuration)
     {
         var root = configuration.GetChildren().SingleOrDefault(c => c.Key.Equals("HomeAssistantControl", StringComparison.OrdinalIgnoreCase));
-        if (root is null) return new(false, new(), [], [], 6, 60);
-        Keys(root, "Domains", "EntityDenylist", "HvacModeAllowlist", "RateLimit");
+        if (root is null) return new(false, new(), [], [], 6, 60, new TtsPolicy(configuration.GetSection("HomeAssistantControl")));
+        Keys(root, "Domains", "EntityDenylist", "HvacModeAllowlist", "RateLimit", "MediaPlayerMaxVolume", "Tts");
         if (!root.GetChildren().Any()) throw InvalidConfiguration();
         var domainSection = root.GetSection("Domains");
         if (domainSection.Value is not null) throw InvalidConfiguration();
@@ -84,7 +88,7 @@ public sealed class ControlPolicy
             var entities = List(domain.GetSection("EntityAllowlist"));
             var control = List(domain.GetSection("ControlServices"));
             var sensitive = List(domain.GetSection("SensitiveControlServices"));
-            if (all && (domain.Key == "switch" || entities.Length != 0) || entities.Any(e => !CanonicalEntity(e) || !e.StartsWith(domain.Key + ".", StringComparison.Ordinal)) ||
+            if (all && (domain.Key is "switch" or "media_player" || entities.Length != 0) || entities.Any(e => !CanonicalEntity(e) || !e.StartsWith(domain.Key + ".", StringComparison.Ordinal)) ||
                 control.Except(MaximumServices(domain.Key, RiskLevel.Control), StringComparer.Ordinal).Any() ||
                 sensitive.Except(MaximumServices(domain.Key, RiskLevel.SensitiveControl), StringComparer.Ordinal).Any()) throw InvalidConfiguration();
             parsed.Add(domain.Key, new(all, entities.ToFrozenSet(StringComparer.Ordinal), control.ToFrozenSet(StringComparer.Ordinal), sensitive.ToFrozenSet(StringComparer.Ordinal)));
@@ -97,7 +101,9 @@ public sealed class ControlPolicy
         Keys(limits, "PerEntityPerMinute", "GlobalPerMinute");
         // A jelenlevő null skalár nem hiányzó kulcs.
         foreach (var item in limits.GetChildren()) if (item.Value is null) throw InvalidConfiguration();
-        return new(true, parsed, deny, modes, Limit(limits.GetSection("PerEntityPerMinute"), 6), Limit(limits.GetSection("GlobalPerMinute"), 60));
+        var media = new TtsPolicy(root);
+        if (parsed.TryGetValue("media_player", out var players) && (players.Control.Contains("speak") || players.Sensitive.Contains("speak")) && media.EngineEntityId is null) throw InvalidConfiguration();
+        return new(true, parsed, deny, modes, Limit(limits.GetSection("PerEntityPerMinute"), 6), Limit(limits.GetSection("GlobalPerMinute"), 60), media);
     }
 
     public static bool CanonicalEntity(string? entity) => entity is { Length: <= 255 } &&
@@ -131,9 +137,21 @@ public sealed class ControlPolicy
             else if (domain == "cover" && service == "set_cover_position" && field.Name == "position" && Integer(field.Value, 0, 100, out var position)) values.Add(field.Name, position);
             else if (domain == "climate" && service == "set_temperature" && field.Name == "temperature" && ControlNumber.InRange(field.Value, 10, 30)) values.Add(field.Name, field.Value.Clone());
             else if (domain == "climate" && service == "set_hvac_mode" && field.Name == "hvac_mode" && field.Value.ValueKind == JsonValueKind.String && hvac.Contains(field.Value.GetString()!)) values.Add(field.Name, field.Value.GetString()!);
+            else if (domain == "media_player" && service is "volume_set" or "speak" && field.Name == "volume_level" && Media.AllowsVolume(field.Value)) values.Add(field.Name, field.Value.Clone());
+            else if (domain == "media_player" && service == "volume_mute" && field.Name == "is_volume_muted" && field.Value.ValueKind is JsonValueKind.True or JsonValueKind.False) values.Add(field.Name, field.Value.GetBoolean());
+            else if (domain == "media_player" && service == "speak" && field.Name == "message" && Media.EngineEntityId is not null) values.Add(field.Name, TtsPolicy.PlainText(field.Value));
             else throw Denied();
         }
         if (service is "set_cover_position" or "set_temperature" or "set_hvac_mode" && values.Count != 1) throw Denied();
+        if (domain == "media_player")
+        {
+            if (service is "volume_set" or "volume_mute" && values.Count != 1) throw Denied();
+            if (service == "speak")
+            {
+                if (!values.ContainsKey("message")) throw Denied();
+                values.TryAdd("volume_level", Media.MaximumVolume);
+            }
+        }
         return new(domain, service, entity, JsonSerializer.SerializeToElement(values));
     }
     private static bool Integer(JsonElement value, int min, int max, out int result)

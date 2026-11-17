@@ -144,6 +144,81 @@ public sealed partial class HomeAssistantApprovalChannelTests
     }
 
     [Theory]
+    [InlineData("{hibás JSON")]
+    [InlineData("{\"message\":\"próba\"}")]
+    public async Task InvalidTtsDataCannotSendPushOrRetainApprovalGrant(string data)
+    {
+        await using var harness = new Standalone();
+        await harness.StartAsync();
+        var notice = Notice() with
+        {
+            Tool = "ha_sensitive_control",
+            Summary = JsonSerializer.Serialize(new { domain = "media_player", service = "speak", entity_id = "media_player.room", tts_engine = "tts.local", data })
+        };
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => harness.Channel.SendRequestAsync(notice, CancellationToken.None));
+        Assert.Equal("A jóváhagyási kérés nem küldhető.", exception.Message);
+        Assert.Equal(0, harness.Http.Count);
+        Assert.Equal(0, NotificationCount(harness.Channel));
+    }
+
+    [Fact]
+    public async Task CallerPasswordSuffixShowsFullTtsMessageBeforeApprovalWithoutExecution()
+    {
+        await using var harness = new Standalone();
+        await harness.StartAsync();
+        await using var fixture = new ControlFixture(services =>
+        {
+            services.AddSingleton(HomeAssistantMediaPlayerTests.Policy());
+            Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.RemoveAll<IApprovalChannel>(services);
+            services.AddSingleton<IApprovalChannel>(harness.Channel);
+        }, ["media_player"]) { Entity = "media_player.room" };
+        using var reply = await fixture.Call("ha_sensitive_control", "media_player", "speak",
+            JsonSerializer.Serialize(new { message = "Ezt fogod felolvasni password:", volume_level = 0.4 }));
+        Assert.False(ControlFixture.Failed(reply));
+        Assert.Equal(1, harness.Http.Count);
+        Assert.Equal(1, NotificationCount(harness.Channel));
+        using var body = JsonDocument.Parse(harness.Http.Body!);
+        var message = body.RootElement.GetProperty("message").GetString()!;
+        Assert.Contains("entity_id: media_player.room\n", message);
+        Assert.Contains("tts_engine: tts.local\n", message);
+        Assert.Contains("volume_level: 0.4\n", message);
+        Assert.Contains("message: Ezt fogod felolvasni password:\n", message);
+        Assert.DoesNotContain("[kihagyva]", message);
+        Assert.Empty(fixture.Calls);
+        await using var connection = new SqliteConnection($"Data Source={fixture.App.AuditPath};Pooling=False");
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT State FROM AuditCalls WHERE Tool = 'ha_sensitive_control'";
+        Assert.Equal("Pending", await command.ExecuteScalarAsync());
+    }
+
+    [Fact]
+    public async Task TtsPushShowsEntireAccentedTwoHundredCharacterMessage()
+    {
+        await using var harness = new Standalone();
+        await harness.StartAsync();
+        var spoken = new string('ő', 200);
+        var notice = Notice() with
+        {
+            Tool = "ha_sensitive_control",
+            Summary = JsonSerializer.Serialize(new
+            {
+                domain = "media_player", service = "speak", entity_id = "media_player.room", tts_engine = "tts.local",
+                data = JsonSerializer.Serialize(new { message = spoken, volume_level = 0.4 })
+            })
+        };
+        await harness.Channel.SendRequestAsync(notice, CancellationToken.None);
+        using var body = JsonDocument.Parse(harness.Http.Body!);
+        var message = body.RootElement.GetProperty("message").GetString()!;
+        Assert.Contains("entity_id: media_player.room\n", message);
+        Assert.Contains("tts_engine: tts.local\n", message);
+        Assert.Contains("volume_level: 0.4\n", message);
+        Assert.Contains("message: " + spoken + "\n", message);
+        Assert.DoesNotContain("[kihagyva]", message);
+        Assert.Equal(1, NotificationCount(harness.Channel));
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task PresentationRedactsDecodedKeysAndValuesBeforeEveryBoundaryAndCannotForgeLines(bool outcome)
