@@ -31,6 +31,8 @@ internal static class HomeAssistantReadProjection
             (LocationText(value.GetString()!) || name == "unit_of_measurement" &&
                 value.GetString()!.Trim().ToLowerInvariant() is "°" or "deg" or "degree" or "degrees" or "rad"));
 
+    public static bool IsSafe(HomeAssistantArea area) => !LocationText(area.AreaId) && !LocationText(area.AreaName);
+
     public static Dictionary<string, object> Config(JsonElement source)
     {
         var result = new Dictionary<string, object>();

@@ -14,6 +14,14 @@ public sealed class HomeAssistantClient : IDisposable
     private readonly Guid secretId;
     private readonly HashSet<string> domains;
     private const int MaximumResponseBytes = 1024 * 1024;
+    // Kizárólag szerveroldali adat: hívói paraméter soha nem kerülhet a sablonba.
+    private const string AreasTemplate = """
+        {% set ns = namespace(items=[]) %}
+        {% for id in areas() %}
+        {% set ns.items = ns.items + [{'area_id': id, 'area_name': area_name(id), 'entities': area_entities(id)}] %}
+        {% endfor %}
+        {{ ns.items | to_json }}
+        """;
 
     public HomeAssistantClient(IOptions<HomeAssistantOptions> options, ISecretProvider secrets)
         : this(options, secrets, new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false, UseProxy = false }) { }
@@ -62,6 +70,32 @@ public sealed class HomeAssistantClient : IDisposable
 
     public bool IsDomainAllowed(string? domain) => domain is { Length: > 0 and <= 255 } &&
         Regex.IsMatch(domain, @"\A[a-z][a-z0-9_]*\z", RegexOptions.CultureInvariant) && domains.Contains(domain);
+
+    public async Task<IReadOnlyList<HomeAssistantArea>> GetAreasAsync(CancellationToken cancellationToken = default)
+    {
+        var json = await SendAsync("/api/template", cancellationToken, JsonSerializer.Serialize(new { template = AreasTemplate }));
+        if (json.ValueKind != JsonValueKind.Array) throw InvalidResponse();
+        var areas = new List<HomeAssistantArea>();
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        var assigned = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var element in json.EnumerateArray())
+        {
+            if (!TryString(element, "area_id", out var id) || string.IsNullOrWhiteSpace(id) || !ids.Add(id) ||
+                !TryString(element, "area_name", out var name) || string.IsNullOrWhiteSpace(name) ||
+                !element.TryGetProperty("entities", out var entities) || entities.ValueKind != JsonValueKind.Array)
+                throw InvalidResponse();
+            var entityIds = new List<string>();
+            foreach (var entity in entities.EnumerateArray())
+            {
+                if (entity.ValueKind != JsonValueKind.String) throw InvalidResponse();
+                if (IsAllowed(entity.GetString())) entityIds.Add(entity.GetString()!);
+            }
+            var unique = entityIds.Distinct(StringComparer.Ordinal).ToArray();
+            if (unique.Any(entity => !assigned.Add(entity))) throw InvalidResponse();
+            areas.Add(new HomeAssistantArea(id, name, unique));
+        }
+        return areas.AsReadOnly();
+    }
 
     public bool IsEntityAllowed(string? entityId) => IsAllowed(entityId);
 

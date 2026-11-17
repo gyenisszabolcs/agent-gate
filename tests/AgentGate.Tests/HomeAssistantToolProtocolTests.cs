@@ -21,6 +21,7 @@ public sealed class HomeAssistantToolProtocolTests
     [InlineData("ha_list_states", "domain")]
     [InlineData("ha_get_state", "entity_id")]
     [InlineData("ha_get_config", null)]
+    [InlineData("ha_list_areas", null)]
     public async Task MissingIntegrationIsListedReadOnlyAndFailsThroughDurableAudit(string name, string? parameter)
     {
         var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
@@ -33,7 +34,8 @@ public sealed class HomeAssistantToolProtocolTests
         var registered = Assert.Single(factory.Services.GetRequiredService<IOptions<McpServerOptions>>().Value.ToolCollection!,
             item => item.ProtocolTool.Name == name);
         Assert.Equal(RiskLevel.Read, Assert.Single(registered.Metadata.OfType<ToolRiskAttribute>()).Level);
-        Assert.Equal(parameter is null ? [] : new[] { parameter }, Assert.Single(registered.Metadata.OfType<ToolAuditParametersAttribute>()).Names);
+        Assert.Equal(name == "ha_list_states" ? ["domain", "area"] : parameter is null ? [] : new[] { parameter },
+            Assert.Single(registered.Metadata.OfType<ToolAuditParametersAttribute>()).Names);
         using var call = await SendAsync(client, "tools/call", new { name, arguments = parameter == "entity_id" ? new Dictionary<string, string> { [parameter] = "sensor.room" } : new() });
         var result = call.RootElement.GetProperty("result");
         Assert.True(result.GetProperty("isError").GetBoolean());
@@ -80,6 +82,7 @@ public sealed class HomeAssistantToolProtocolTests
             object payload = request.RequestUri!.AbsolutePath switch
             {
                 "/api/states" => new[] { state },
+                "/api/template" => Array.Empty<object>(),
                 "/api/config" => new
                 {
                     version = "2026.11",
@@ -140,7 +143,7 @@ public sealed class HomeAssistantToolProtocolTests
         Assert.False(await reader.ReadAsync());
         Assert.False(logs.Contains(secrets.Token) || logs.Contains(canary), "Titok a strukturált naplóban.");
         Assert.False(call.RootElement.ToString().Contains(canary, StringComparison.Ordinal), "Provider-titok az MCP-válaszban.");
-        Assert.Equal(outcome is "secret" or "timeout" ? 0 : 1, handler.Calls);
+        Assert.Equal(outcome is "secret" or "timeout" ? 0 : outcome == "success" && name != "ha_get_config" ? 2 : 1, handler.Calls);
     }
 
     [Theory]

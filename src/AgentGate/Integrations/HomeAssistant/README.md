@@ -1,10 +1,11 @@
 # Home Assistant olvasási kliens és MCP-eszközök
 
-A főprogramba feltételesen bekötött kliens három olvasási művelete:
+A főprogramba feltételesen bekötött kliens négy olvasási művelete:
 
 - `GetConfigAsync(ct)` → `GET /api/config`, szűrt `HomeAssistantConfig.Data` JSON objektum.
 - `GetStatesAsync(ct)` → `GET /api/states`, az összes engedélyezett entitás `HomeAssistantState` DTO-ja.
 - `GetStateAsync(entityId, ct)` → `GET /api/states/{entity_id}`, egy DTO.
+- `GetAreasAsync(ct)` → `POST /api/template`, kizárólag a kódban rögzített területlekérő sablonnal; ellenőrzött területlista és entitás-hozzárendelések.
 
 Nincs általános HTTP-végpont, titoknév szerinti keresés vagy közvetlen Bitwarden-hívás. Az olvasási eszközök nem írnak; a külön, opcionális [vezérlési modul](Control/README.md) két szűk írási eszköze ugyanezen kliens ellenőrzött transportját használja.
 
@@ -27,14 +28,29 @@ A `HomeAssistant:TokenSecretId` utalhat ugyanarra a Bitwarden-titokra, mint a k�
 
 ## MCP-szerződés
 
-Mindhárom eszköz mindig regisztrált, explicit Read kockázattal és read-only jelöléssel, a közös tartós auditkapun át. Hiányzó kliensnél fix `GateToolException`: „A Home Assistant nincs beállítva.” Hibás konfigurációt nem álcázunk hiánynak. A provider-/HTTP-/válaszhiba és timeout toolszinten fix „A Home Assistant lekérés sikertelen.”; a hívói megszakítás továbbadódik.
+Mind a négy eszköz mindig regisztrált, explicit Read kockázattal és read-only jelöléssel, a közös tartós auditkapun át. Hiányzó kliensnél fix `GateToolException`: „A Home Assistant nincs beállítva.” Hibás konfigurációt nem álcázunk hiánynak. A provider-/HTTP-/válaszhiba és timeout toolszinten fix „A Home Assistant lekérés sikertelen.”; a hívói megszakítás továbbadódik.
 
-- `ha_list_states(domain?)`: az engedélyezőlista és az opcionális pontos domain metszete, majd a helyadatgyanús entitások kihagyása, ordinális `entity_id` rendezés és **rögzített 100-as limit**. A válasz `items`, `returned_count`, `truncated`; utóbbi pontosan 100-nál több kiadható találatnál igaz. Csonkoláskor szűkíts domain szerint; nincs lapozás vagy limitkonfiguráció. Tiltott/hibás domainnél nincs titok- vagy HTTP-hívás.
-- Listaelem: csak `entity_id`, `state`, opcionális string `friendly_name`, `unit_of_measurement`, valamint opcionális `last_changed`. Az utóbbi a HA-válasz ellenőrzött ISO-időbélyege (teljes dátum+idő+másodperc, opcionális 1–7 törtmásodperc, Z vagy numerikus offset), nem a lekérés ideje; hiányzó/hibás értéket nem pótolunk.
+- `ha_list_states(domain?, area?)`: az engedélyezőlista és az opcionális pontos domain, illetve terület metszete, majd a helyadatgyanús entitások kihagyása, ordinális `entity_id` rendezés és **rögzített 100-as limit**. A válasz `items`, `returned_count`, `truncated`; utóbbi pontosan 100-nál több kiadható találatnál igaz. Csonkoláskor szűkíts domain vagy terület szerint; nincs lapozás vagy limitkonfiguráció. Tiltott/hibás domainnél nincs titok- vagy HTTP-hívás.
+- Listaelem: csak `entity_id`, `state`, `area_name` (string vagy `null`), opcionális string `friendly_name`, `unit_of_measurement`, valamint opcionális `last_changed`. Az utóbbi a HA-válasz ellenőrzött ISO-időbélyege (teljes dátum+idő+másodperc, opcionális 1–7 törtmásodperc, Z vagy numerikus offset), nem a lekérés ideje; hiányzó/hibás értéket nem pótolunk.
 - `ha_get_state(entity_id)`: ugyanezek a mezők és `attributes`. Csak öt pontos nevű, string típusú attribútum adható ki: `friendly_name`, `unit_of_measurement`, `device_class`, `state_class`, `icon`. Ismeretlen mező, objektum, tömb, szám, boolean, null kimarad. Tiltott/hibás azonosítónál nincs I/O; helyadatgyanús válasznál fix elutasítás van.
 - `ha_get_config`: csak string `version`, `time_zone`, `language`, `location_name` és a szűrt `unit_system` objektum. Utóbbiban csak string `length`, `mass`, `temperature`, `volume`, `pressure`, `wind_speed`, `accumulated_precipitation` engedélyezett. Hiányzó/rossz típusú érték kimarad; üres egységrendszer megmaradhat. Koordináta, elevation, URL, könyvtárlista, komponenslista és minden más mező kizárt.
+- `ha_list_areas`: `items` tömb, benne `area_id`, `area_name`, `entities`. Az entitásleíró kizárólag `entity_id` és `friendly_name` (string vagy hiányzó névnél `null`); nincs állapot vagy nyers attribútum. A területek `area_id`, az entitások `entity_id` szerint ordinálisan rendezettek. Az üres területek is megmaradnak. Csak a domainengedélyezésen és a meglévő helyadatprojekción is átjutó, aktuális állapottal rendelkező entitás szerepelhet; a registry önmagában nem tesz láthatóvá egy entitást. Nincs 100-as terület-/entitáslimit, az upstream válaszokra az 1 MiB-os határ érvényes.
 
-Csak a tényleges bemenetnevek auditálhatók: a listánál `domain`, az egyedi olvasásnál `entity_id`, a confignál egyik sem. Nincs válasz, nyers attribútum vagy konfiguráció az auditparaméterekben. A strukturált MCP-válasz közvetlenül a fenti objektum; a szöveges tartalom ugyanennek a JSON-ábrázolása.
+Csak a tényleges bemenetnevek auditálhatók: az állapotlistánál `domain` és `area`, az egyedi olvasásnál `entity_id`, a confignál és területlistánál egyik sem. A területszűrőre is a közös titokszűrés érvényes. Nincs válasz, nyers attribútum vagy konfiguráció az auditparaméterekben. A strukturált MCP-válasz közvetlenül a fenti objektum; a szöveges tartalom ugyanennek a JSON-ábrázolása.
+
+### Területek: használat és biztonsági határ
+
+Példák: `ha_list_states` argumentumai `{"domain":"light","area":"Nappali"}` vagy `{"area":"living_room"}`. Az `area` pontos, kis-/nagybetűérzékeny név vagy azonosító; nincs trim, wildcard vagy sablonkiértékelés. Minden pontos név-/azonosító-egyezés uniója adja a területhez tartozó halmazt, amelyet a domain- és olvasási láthatósággal metszünk, még a 100-as limit előtt. Ismeretlen terület üres eredmény. Üres, csak whitespace-ből álló vagy vezérlőkaraktert tartalmazó szűrő fix „A területszűrő érvénytelen.” hibával, I/O nélkül elutasítva.
+
+A sablon `areas()`, `area_name(id)` és `area_entities(id)` segítségével összeállított objektumlistát alakít JSON-ná a `to_json` szűrővel. A kérés egyetlen `template` mezőt tartalmaz; sem domain, sem terület, sem entitásazonosító nem kerül bele a hívótól. Nincs általános template-eszköz. A szűrés teljes egészében a gate-ben, a válasz feldolgozása után történik.
+
+Az állapotlista, egyedi állapot és területlista kérésenként egy állapotlekérést és egy fix template-lekérést végez, gyorsítótár nélkül. Ez két külön pillanatkép, nem atomi HA-tranzakció; közben megváltozó vagy hiányzó hozzárendelésnél az `area_name` `null` lehet. Hibás/mély/túl nagy vagy sikertelen template-válasznál az egész eszközhívás hibával zárul, nincs részleges eredmény vagy elnémított fallback. A template-válasz csak tömb lehet, nem JSON-t tartalmazó string. Azonos területazonosító többször vagy egy engedélyezett entitás több külön területen ellentmondásos válasz, ezért teljes elutasítás. Azonos területen az ismétlődő entitásazonosító egyszer szerepel.
+
+A terület neve és azonosítója is a meglévő titokszűrőn, majd a helyadatgyanús szöveg ellenőrzésén megy át. Helyadatgyanús terület kimarad, az ahhoz tartozó állapot területneve `null`; az entitás saját láthatósági szabályai változatlanok. A terület kizárólag olvasási adat: `ha_control` és `ha_sensitive_control` továbbra is egyetlen engedélyezett `entity_id` értéket fogad, `area_id` vagy általános `target` nem adható át.
+
+A HA dokumentációja szerint a template REST-végpont adminjogot igényel. A meglévő `HomeAssistant:TokenSecretId` által jelölt token megfelelő jogosultsága szükséges; ezt nem próbáljuk megkerülni, és nem teszünk új titkot vagy konfigurációs kulcsot a rendszerbe. A configolvasás és a vezérlés nem kezd template-lekérésbe; a változás nem bővíti az írási jogosultságot.
+
+Elsődleges HA-források: [REST template-végpont](https://contributors.home-assistant.io/core/internals/rest-api/#post-apitemplate), [areas](https://www.home-assistant.io/template-functions/areas/), [area_name](https://www.home-assistant.io/template-functions/area_name/), [area_entities](https://www.home-assistant.io/template-functions/area_entities/), [to_json](https://www.home-assistant.io/template-functions/to_json/). A REST-válasz szöveges sabloneredmény; annak JSON-alakját a gate fix sablonja határozza meg.
 
 ### Helyadatkiadási határ
 
