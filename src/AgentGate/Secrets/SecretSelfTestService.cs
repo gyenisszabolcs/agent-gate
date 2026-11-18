@@ -22,7 +22,7 @@ public sealed class SecretSelfTestService(
         // A visszaadott titkot nem őrizzük meg a feladat eredményében.
         var work = Task.Run(async () =>
         {
-            _ = await services.GetRequiredService<ISecretProvider>().GetSecretAsync(id, cancellation.Token);
+            _ = await services.GetRequiredService<ISecretProvider>().GetFreshSecretAsync(id, cancellation.Token);
         }, cancellation.Token);
         try
         {

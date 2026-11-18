@@ -150,7 +150,8 @@ public sealed class HomeAssistantClient : IDisposable
         try
         {
             ct.ThrowIfCancellationRequested();
-            var token = await secrets.GetSecretAsync(secretId, ct);
+            var lease = await secrets.GetSecretLeaseAsync(secretId, ct);
+            var token = lease.Value;
             if (string.IsNullOrEmpty(token) || token.Length > 16384 ||
                 !Regex.IsMatch(token, @"\A[A-Za-z0-9\-._~+/]+=*\z", RegexOptions.CultureInvariant))
                 throw new InvalidOperationException();
@@ -176,6 +177,8 @@ public sealed class HomeAssistantClient : IDisposable
             using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
             if (!response.IsSuccessStatusCode)
             {
+                if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                    secrets.Invalidate(secretId, lease);
                 // Csak a tényleges HTTP-válasz és e két művelet ismert kéréselutasítása.
                 // 408/5xx/átirányítás: a hatás bizonytalan, nem igazolt elutasítás.
                 serviceRejected = path is "/api/services/media_player/volume_set" or "/api/services/tts/speak" &&

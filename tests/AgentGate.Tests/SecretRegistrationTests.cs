@@ -18,12 +18,13 @@ public sealed class SecretRegistrationTests
         using var client = app.CreateClient();
         Assert.Null(app.Services.GetRequiredService<IConfiguration>()["Secrets:SelfTestSecretId"]);
         var provider = app.Services.GetService<ISecretProvider>();
-        Assert.True(provider is BitwardenSecretProvider, "Hiányzik a Bitwarden regisztráció.");
+        Assert.True(provider?.GetType().Name == "CachedSecretProvider", "Hiányzik a cache-dekoráció.");
         Assert.Same(provider, app.Services.GetRequiredService<ISecretProvider>());
+        Assert.Same(provider, app.Services.GetServices<Microsoft.Extensions.Hosting.IHostedService>().OfType<CachedSecretProvider>().Single());
         // A valódi példány forrásválasztását vizsgáljuk környezetmódosítás és natív SDK-hívás nélkül.
         var mode = typeof(BitwardenSecretProvider).GetFields(
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
-            .Single(field => field.FieldType == typeof(bool)).GetValue(provider);
+            .Single(field => field.FieldType == typeof(bool)).GetValue(app.Services.GetRequiredService<BitwardenSecretProvider>());
         Assert.True(mode is true, "A gate nem kizárólag systemd credentialt használ.");
         Assert.Null(app.Services.GetService<AgentGate.Integrations.HomeAssistant.HomeAssistantClient>());
         Assert.Equal("ok", await client.GetStringAsync("/health"));

@@ -185,7 +185,15 @@ public sealed class HomeAssistantControlService(IServiceProvider services, Contr
                 RequireUniqueFields(state.Attributes);
                 if (state.State is not ("unknown" or "unavailable") && state.Attributes.TryGetProperty("volume_level", out var actual) &&
                     policy.Media.AllowsVolume(actual) && ControlNumber.Compare(actual, volume) <= 0) return;
-                await Task.Delay(TimeSpan.FromMilliseconds(500), clock, ct);
+                var pauseStarted = clock.GetTimestamp();
+                var remaining = TimeSpan.FromMilliseconds(500);
+                while (remaining > TimeSpan.Zero)
+                {
+                    // A timerjelzés nem bizonyítja a monoton minimumot. Felfelé kerekítünk,
+                    // mert a Task.Delay a pozitív szubmilliszekundumos maradékot nullára vágná.
+                    await Task.Delay(TimeSpan.FromMilliseconds(Math.Ceiling(remaining.TotalMilliseconds)), clock, ct);
+                    remaining = TimeSpan.FromMilliseconds(500) - clock.GetElapsedTime(pauseStarted);
+                }
             }
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && deadline.IsCancellationRequested)

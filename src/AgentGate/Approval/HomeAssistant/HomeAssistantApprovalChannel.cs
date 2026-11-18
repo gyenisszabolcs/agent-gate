@@ -65,10 +65,14 @@ public sealed class HomeAssistantApprovalChannel(
             using var socket = await sockets.ConnectAsync(uri, handshake.Token);
             using (var required = await ReceiveAsync(socket, handshake.Token))
                 RequireType(required.RootElement, "auth_required");
-            var token = await ReadTokenAsync(handshake.Token);
-            await SendAsync(socket, new { type = "auth", access_token = token }, handshake.Token);
+            var lease = await ReadTokenLeaseAsync(handshake.Token);
+            await SendAsync(socket, new { type = "auth", access_token = lease.Value }, handshake.Token);
             using (var authenticated = await ReceiveAsync(socket, handshake.Token))
+            {
+                if (TryString(authenticated.RootElement, "type", out var type) && type == "auth_invalid")
+                    secrets.Invalidate(Guid.Parse(options.TokenSecretId!), lease);
                 RequireType(authenticated.RootElement, "auth_ok");
+            }
             await SendAsync(socket, new { id = 1, type = "subscribe_events", event_type = "mobile_app_notification_action" }, handshake.Token);
             using (var subscribed = await ReceiveAsync(socket, handshake.Token))
             {
@@ -230,7 +234,8 @@ public sealed class HomeAssistantApprovalChannel(
         {
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(options.TimeoutSeconds));
-            var token = await ReadTokenAsync(deadline.Token);
+            var lease = await ReadTokenLeaseAsync(deadline.Token);
+            var token = lease.Value;
             var message = presentation.Request(request, token);
             message = message.Replace(token, "[REDACTED]", StringComparison.Ordinal);
             if (!available) throw new InvalidOperationException();
@@ -239,7 +244,7 @@ public sealed class HomeAssistantApprovalChannel(
                 title = "Gate jóváhagyás",
                 message,
                 data = new { actions = new[] { new { action = grant.ApproveCode, title = "Jóváhagyom" }, new { action = grant.RejectCode, title = "Elutasítom" } } }
-            }, token, deadline.Token);
+            }, lease, deadline.Token);
             if (!available) throw new InvalidOperationException();
         }
         catch (Exception)
@@ -249,17 +254,17 @@ public sealed class HomeAssistantApprovalChannel(
         }
     }
 
-    private async Task<string> ReadTokenAsync(CancellationToken cancellationToken)
+    private async Task<SecretLease> ReadTokenLeaseAsync(CancellationToken cancellationToken)
     {
         var valueLock = new object();
-        string? value = null;
+        SecretLease? value = null;
         var accepting = true;
         bool succeeded;
         try
         {
             succeeded = await secretWork.SendAsync(async token =>
             {
-                var found = await secrets.GetSecretAsync(Guid.Parse(options.TokenSecretId!), token);
+                var found = await secrets.GetSecretLeaseAsync(Guid.Parse(options.TokenSecretId!), token);
                 lock (valueLock)
                     if (accepting && !token.IsCancellationRequested) value = found;
             }, cancellationToken);
@@ -268,20 +273,22 @@ public sealed class HomeAssistantApprovalChannel(
         {
             lock (valueLock) accepting = false;
         }
-        string? result;
+        SecretLease? result;
         lock (valueLock) { result = value; value = null; }
-        if (!succeeded || result is not { Length: >= 1 and <= 16384 } || !Regex.IsMatch(result, @"\A[A-Za-z0-9\-._~+/]+=*\z", RegexOptions.CultureInvariant))
+        if (!succeeded || result is null || result.Value is not { Length: >= 1 and <= 16384 } || !Regex.IsMatch(result.Value, @"\A[A-Za-z0-9\-._~+/]+=*\z", RegexOptions.CultureInvariant))
             throw new InvalidOperationException();
         return result;
     }
 
-    private async Task PostAsync(object payload, string token, CancellationToken cancellationToken)
+    private async Task PostAsync(object payload, SecretLease lease, CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/services/notify/" + options.NotifyService!["notify.".Length..]);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", lease.Value);
         request.Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(payload));
         request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
         using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+            secrets.Invalidate(Guid.Parse(options.TokenSecretId!), lease);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException();
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var buffer = new MemoryStream();
@@ -328,7 +335,8 @@ public sealed class HomeAssistantApprovalChannel(
             if (!available) throw new InvalidOperationException();
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(options.TimeoutSeconds));
-            var token = await ReadTokenAsync(deadline.Token);
+            var lease = await ReadTokenLeaseAsync(deadline.Token);
+            var token = lease.Value;
             var state = outcome.State switch
             {
                 ApprovalState.Executed => "jóváhagyva és végrehajtva",
@@ -337,7 +345,7 @@ public sealed class HomeAssistantApprovalChannel(
                 _ => "sikertelen; ez nem jelenti a már végrehajtott művelet visszagörgetését"
             };
             var message = $"{ApprovalPushFormatter.SafeLine(grant.Notice.Caller, 128, token)}\n{grant.Notice.Tool}\n{state}\n{ApprovalPushFormatter.SafeLine(outcome.Result ?? "", 512, token)}\nAzonosító: {outcome.Id.ToString("N")[..8]}";
-            await PostAsync(new { title = "Gate eredmény", message = message.Replace(token, "[REDACTED]", StringComparison.Ordinal) }, token, deadline.Token);
+            await PostAsync(new { title = "Gate eredmény", message = message.Replace(token, "[REDACTED]", StringComparison.Ordinal) }, lease, deadline.Token);
         }
         catch (Exception)
         {
