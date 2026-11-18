@@ -51,13 +51,33 @@ public sealed class HomeAssistantMediaReadTests
     [InlineData("media_content_type")]
     public async Task MediaTextUsesExistingSecretRedactor(string field)
     {
-        var canary = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
+        // A hexadecimális E számjegy mellett égtájgyanús lehet; itt csak a titokszűrést vizsgáljuk.
+        var canary = Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).Replace('E', 'X');
         using var fixture = CreateFixture(JsonSerializer.Serialize(new Dictionary<string, string> { [field] = "password=" + canary }));
         foreach (var detail in new[] { false, true })
         {
             var state = await State(fixture, detail);
             Assert.False(state.GetRawText().Contains(canary, StringComparison.Ordinal), "Titok a médiaválaszban.");
             Assert.Equal("password=[REDACTED]", state.GetProperty("attributes").GetProperty(field).GetString());
+        }
+    }
+
+    [Fact]
+    public async Task LocationLikeSecretIsOmittedBeforeMediaTextRedaction()
+    {
+        // Az eredeti véletlen hexadecimális bemenet is végződhetett számjegy + E alakra.
+        var canary = Convert.ToHexString(RandomNumberGenerator.GetBytes(24))[..^2] + "1E";
+        using var fixture = CreateFixture(JsonSerializer.Serialize(new Dictionary<string, object>
+        {
+            ["media_title"] = "password=" + canary, ["volume_level"] = 0.25
+        }));
+        foreach (var detail in new[] { false, true })
+        {
+            var state = await State(fixture, detail);
+            Assert.False(state.GetRawText().Contains(canary, StringComparison.Ordinal), "Titok a médiaválaszban.");
+            var attributes = state.GetProperty("attributes");
+            Assert.False(attributes.TryGetProperty("media_title", out _));
+            Assert.Equal(0.25, attributes.GetProperty("volume_level").GetDouble());
         }
     }
 
