@@ -1,6 +1,8 @@
 # Home Assistant olvasási kliens és MCP-eszközök
 
-A főprogramba feltételesen bekötött kliens négy olvasási művelete:
+A külön `ha_get_logs` Read eszköz használatát, 32 000 bájtos teljes kimeneti korlátját és konzervatív titokvédelmét a [naplóolvasás leírása](LogRead/README.md) tartalmazza. Nem az alábbi JSON-projekciót használja.
+
+A főprogramba feltételesen bekötött kliens négy JSON-alapú olvasási művelete:
 
 - `GetConfigAsync(ct)` → `GET /api/config`, szűrt `HomeAssistantConfig.Data` JSON objektum.
 - `GetStatesAsync(ct)` → `GET /api/states`, az összes engedélyezett entitás `HomeAssistantState` DTO-ja.

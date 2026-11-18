@@ -57,6 +57,7 @@ builder.Services.AddMcpServer()
     .WithTools<GateTools>()
     .WithTools<ApprovalTools>()
     .WithTools<HomeAssistantTools>()
+    .WithTools<HomeAssistantLogTools>()
     .WithTools<HomeAssistantControlTools>()
     .WithRequestFilters(filters => filters.AddCallToolFilter(next => (request, cancellationToken) =>
         request.Services!.GetRequiredService<McpAuditFilter>().InvokeAsync(request, next, cancellationToken)));

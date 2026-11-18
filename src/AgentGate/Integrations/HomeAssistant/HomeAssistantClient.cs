@@ -136,7 +136,10 @@ public sealed class HomeAssistantClient : IDisposable
 
     private Task<JsonElement> ReadAsync(string path, CancellationToken cancellationToken) => SendAsync(path, cancellationToken);
 
-    private async Task<JsonElement> SendAsync(string path, CancellationToken cancellationToken, string? body = null, Func<CancellationToken, Task>? beforeSend = null)
+    public async Task<LogRead.HomeAssistantLogSnapshot> GetLogsAsync(CancellationToken cancellationToken = default) =>
+        (await SendAsync("/api/error_log", cancellationToken, readLog: true)).Deserialize<LogRead.HomeAssistantLogSnapshot>()!;
+
+    private async Task<JsonElement> SendAsync(string path, CancellationToken cancellationToken, string? body = null, Func<CancellationToken, Task>? beforeSend = null, bool readLog = false)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(timeout);
@@ -179,6 +182,14 @@ public sealed class HomeAssistantClient : IDisposable
             {
                 if (buffer.Length + read > MaximumResponseBytes) throw new InvalidOperationException();
                 await buffer.WriteAsync(chunk.AsMemory(0, read), ct);
+            }
+            if (readLog)
+            {
+                // Egyetlen rögzített szöveges végpont, ugyanazon transport- és 1 MiB védelemmel.
+                var text = new System.Text.UTF8Encoding(false, true).GetString(buffer.ToArray());
+                var snapshot = LogRead.HomeAssistantLogSanitizer.Sanitize(text, token);
+                ct.ThrowIfCancellationRequested();
+                return JsonSerializer.SerializeToElement(snapshot);
             }
             using var json = JsonDocument.Parse(buffer.ToArray(), new JsonDocumentOptions { MaxDepth = 32 });
             ct.ThrowIfCancellationRequested();
