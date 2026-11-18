@@ -98,13 +98,19 @@ public sealed class HomeAssistantControlService(IServiceProvider services, Contr
     {
         var request = Validate(arguments, risk);
         var attempted = false;
+        var speechPhase = false;
+        var safetyRejected = false;
         TtsRateLimiter.Reservation? reservation = null;
         try
         {
             async Task Guard(CancellationToken ct)
             {
                 Validate(arguments, risk);
-                if (await services.GetRequiredService<IKillSwitchStateSource>().IsEnabledAsync(ct)) throw ControlPolicy.Denied();
+                if (await services.GetRequiredService<IKillSwitchStateSource>().IsEnabledAsync(ct))
+                {
+                    safetyRejected = true;
+                    throw ControlPolicy.Denied();
+                }
                 Validate(arguments, risk);
             }
             var volume = request.Data.GetProperty("volume_level");
@@ -118,16 +124,14 @@ public sealed class HomeAssistantControlService(IServiceProvider services, Contr
                 attempted = true;
             }, cancellationToken);
             // A HA elfogadó válasza nem bizonyítja, hogy az eszköz tényleg átvette a hangerőt.
-            var state = await Client.GetStateAsync(request.EntityId, cancellationToken);
-            RequireUniqueFields(state.Attributes);
-            if (state.State is "unknown" or "unavailable" || !state.Attributes.TryGetProperty("volume_level", out var actual) ||
-                !policy.Media.AllowsVolume(actual) || ControlNumber.Compare(actual, volume) > 0) throw ControlPolicy.Denied();
+            await ConfirmVolumeAsync(request, volume, Guard, cancellationToken);
             var speech = new ControlRequest("tts", "speak", policy.Media.EngineEntityId!, JsonSerializer.SerializeToElement(new
             {
                 media_player_entity_id = request.EntityId,
                 message = request.Data.GetProperty("message").GetString(),
                 cache = false
             }));
+            speechPhase = true;
             await Client.PostServiceAsync(speech, async ct =>
             {
                 await Guard(ct);
@@ -135,15 +139,61 @@ public sealed class HomeAssistantControlService(IServiceProvider services, Contr
             }, cancellationToken);
             return JsonSerializer.SerializeToElement(new { entity_id = request.EntityId, service = "speak", volume_level = volume, status = "elküldve" });
         }
+        catch (TtsExecutionException) { throw; }
+        catch (OperationCanceledException) when (attempted && cancellationToken.IsCancellationRequested)
+        {
+            throw new TtsExecutionException(TtsFailure.Cancelled);
+        }
         catch (TtsQuietHoursException) when (attempted)
         {
-            throw new GateToolException(TtsQuietHoursException.SafeMessage + " A hangerőállítás már megtörténhetett; nincs visszagörgetés vagy újrapróbálás.");
+            throw new TtsExecutionException(TtsFailure.QuietHours);
+        }
+        catch (HomeAssistantServiceRejectedException) when (attempted)
+        {
+            throw new TtsExecutionException(speechPhase ? TtsFailure.SpeechRejected : TtsFailure.VolumeRejected);
+        }
+        catch (GateToolException) when (attempted)
+        {
+            throw new TtsExecutionException(TtsFailure.SafetyDenied);
         }
         catch (Exception) when (attempted)
         {
-            throw new GateToolException("A felolvasási kísérlet vagy hangerő-ellenőrzés sikertelen; a hatás megtörténhetett. Ez nem visszagörgetés; nincs újrapróbálás.");
+            throw new TtsExecutionException(safetyRejected ? TtsFailure.SafetyDenied : TtsFailure.UncertainTransport);
         }
         finally { reservation?.Complete(); }
+    }
+
+    private async Task ConfirmVolumeAsync(ControlRequest request, JsonElement volume, Func<CancellationToken, Task> guard, CancellationToken cancellationToken)
+    {
+        var clock = services.GetRequiredService<TimeProvider>();
+        var window = TimeSpan.FromSeconds(3);
+        var started = clock.GetTimestamp();
+        using var deadline = new CancellationTokenSource(window, clock);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
+        var ct = linked.Token;
+        try
+        {
+            // Legfeljebb hat GET: azonnal, majd az előző válasz után legalább 500 ms múlva.
+            for (var attempt = 0; attempt < 6; attempt++)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (clock.GetElapsedTime(started) >= window) break;
+                await guard(ct).WaitAsync(ct);
+                var state = await Client.GetStateAsync(request.EntityId, ct).WaitAsync(ct);
+                ct.ThrowIfCancellationRequested();
+                if (clock.GetElapsedTime(started) >= window) break;
+                RequireUniqueFields(state.Attributes);
+                if (state.State is not ("unknown" or "unavailable") && state.Attributes.TryGetProperty("volume_level", out var actual) &&
+                    policy.Media.AllowsVolume(actual) && ControlNumber.Compare(actual, volume) <= 0) return;
+                await Task.Delay(TimeSpan.FromMilliseconds(500), clock, ct);
+            }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && deadline.IsCancellationRequested)
+        {
+            throw new TtsExecutionException(TtsFailure.VolumeConfirmationTimeout);
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        throw new TtsExecutionException(TtsFailure.VolumeConfirmationTimeout);
     }
 
     private async Task<JsonElement> ExecuteCoreAsync(IReadOnlyDictionary<string, JsonElement> arguments, RiskLevel risk, CancellationToken cancellationToken)

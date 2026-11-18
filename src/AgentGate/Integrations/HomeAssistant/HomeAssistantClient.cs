@@ -143,6 +143,7 @@ public sealed class HomeAssistantClient : IDisposable
         var ct = deadline.Token;
         Control.ControlRateLimitException? quotaRejection = null;
         Control.TtsQuietHoursException? quietRejection = null;
+        var serviceRejected = false;
         try
         {
             ct.ThrowIfCancellationRequested();
@@ -170,7 +171,14 @@ public sealed class HomeAssistantClient : IDisposable
             }
             ct.ThrowIfCancellationRequested();
             using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
-            if (!response.IsSuccessStatusCode) throw new HttpRequestException();
+            if (!response.IsSuccessStatusCode)
+            {
+                // Csak a tényleges HTTP-válasz és e két művelet ismert kéréselutasítása.
+                // 408/5xx/átirányítás: a hatás bizonytalan, nem igazolt elutasítás.
+                serviceRejected = path is "/api/services/media_player/volume_set" or "/api/services/tts/speak" &&
+                    (int)response.StatusCode is 400 or 401 or 403 or 404 or 405 or 422 or 429;
+                throw new HttpRequestException();
+            }
             await using var stream = await response.Content.ReadAsStreamAsync(ct);
             using var buffer = new MemoryStream();
             var chunk = new byte[8192];
@@ -203,9 +211,12 @@ public sealed class HomeAssistantClient : IDisposable
         catch (Exception)
         {
             // Szándékosan nincs belső kivétel, választest, fejléc, URL vagy szolgáltatói üzenet.
+            if (serviceRejected) throw new HomeAssistantServiceRejectedException();
             throw new HomeAssistantException("A Home Assistant lekérés sikertelen.");
         }
     }
 
     public void Dispose() => http.Dispose();
 }
+
+internal sealed class HomeAssistantServiceRejectedException : Exception;

@@ -144,6 +144,11 @@ public sealed class McpAuditFilter(IServiceProvider services, IOptions<AuditOpti
             state = "Failed";
             result = Error(AgentGate.Integrations.HomeAssistant.Control.TtsQuietHoursException.SafeMessage);
         }
+        catch (AgentGate.Integrations.HomeAssistant.Control.TtsExecutionException exception)
+        {
+            state = "Failed";
+            result = Error(exception.SafeMessage);
+        }
         catch (AgentGate.Tools.GateToolException exception)
         {
             state = "Failed";

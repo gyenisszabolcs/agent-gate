@@ -73,6 +73,27 @@ internal sealed class TtsQuietHoursException() : Exception(SafeMessage)
     internal const string SafeMessage = "Csendes órákban a felolvasás csak a ha_sensitive_control jóváhagyási útján kérhető.";
 }
 
+internal enum TtsFailure
+{
+    VolumeConfirmationTimeout, VolumeRejected, SpeechRejected, UncertainTransport, SafetyDenied, QuietHours, Cancelled
+}
+
+// Csak a végrehajtó állítja elő. Nincs tetszőleges szöveg, providerüzenet vagy belső kivétel.
+internal sealed class TtsExecutionException(TtsFailure failure) : Exception(MessageFor(failure))
+{
+    internal string SafeMessage => MessageFor(failure);
+    private static string MessageFor(TtsFailure value) => (value switch
+    {
+        TtsFailure.VolumeConfirmationTimeout => "A hangerő-visszaigazolás nem érkezett meg 3 másodpercen belül.",
+        TtsFailure.VolumeRejected => "A Home Assistant elutasította a hangerőállítást.",
+        TtsFailure.SpeechRejected => "A Home Assistant elutasította a felolvasást.",
+        TtsFailure.UncertainTransport => "A Home Assistant hívás eredménye bizonytalan (transport- vagy válaszhiba).",
+        TtsFailure.QuietHours => TtsQuietHoursException.SafeMessage,
+        TtsFailure.Cancelled => "A felolvasási művelet megszakadt.",
+        _ => "A felolvasást a végrehajtási biztonsági ellenőrzés letiltotta."
+    }) + " A hangerőállítás vagy a felolvasás hatása már megtörténhetett; nincs visszagörgetés vagy újrapróbálás.";
+}
+
 /// <summary>Mindkét út és minden cél között közös, atomikus, monoton gördülő TTS-kvóta.</summary>
 public sealed class TtsRateLimiter(TimeProvider clock)
 {
