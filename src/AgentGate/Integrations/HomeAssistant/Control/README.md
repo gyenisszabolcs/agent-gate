@@ -4,6 +4,8 @@ A `ha_control` fix `Control`, a `ha_sensitive_control` fix `SensitiveControl` be
 
 ## Hívás és jóváhagyás
 
+Felolvasáshoz (`media_player` / `speak`) először a `ha_control` eszközt hívd; csendes órákon kívül ez a megfelelő út. Csak akkor válaszd a `ha_sensitive_control` jóváhagyási útját felolvasásra, ha a gate kifejezetten a csendes órákra hivatkozva utasította el a normál kérést. Az időablakot és a jogosultságot a gate dönti el, nem az agent saját órája. Policy-, entitás-, hangerő-, szöveg-, kvóta- vagy hálózati hiba nem indok sensitive újrapróbálásra. Ez a hívási útmutató nem változtatja meg a sensitive zár/cover vezérlést vagy a futásidejű jóváhagyási szabályokat.
+
 Mindkét eszköz argumentumai: `domain`, `service`, `entity_id`, opcionálisan `data`. Példa:
 
 ```json

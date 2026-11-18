@@ -13,7 +13,7 @@ public sealed class HomeAssistantControlTools(AgentGate.Integrations.HomeAssista
     [ToolAuditParameters("domain", "service", "entity_id", "data")]
     [ToolRisk(RiskLevel.Control)]
     [McpServerTool(Name = "ha_control", ReadOnly = false, Destructive = true, OpenWorld = false, UseStructuredContent = true)]
-    [Description("Egy engedélyezett Home Assistant entitás szűk vezérlése.")]
+    [Description("Egy engedélyezett Home Assistant entitás szűk vezérlése. A media_player speak felolvasáshoz csendes órákon kívül a ha_control használandó; először ezt hívd. Felolvasásra a ha_sensitive_control csak akkor választandó, ha a gate a csendes órákra hivatkozva elutasította a ha_control kérést; ezen az úton a gate jóváhagyást kér. Az időablakról és a jogosultságról a gate dönt, nem az agent saját órája. Policy-, entitás-, hangerő-, szöveg-, kvóta- vagy hálózati hiba esetén ne válts sensitive útra.")]
     public async Task<CallToolResult> Control(string domain, string service, string entity_id, CancellationToken cancellationToken, JsonElement? data = null)
     {
         var arguments = new Dictionary<string, JsonElement>
@@ -30,7 +30,7 @@ public sealed class HomeAssistantControlTools(AgentGate.Integrations.HomeAssista
     [ToolAuditParameters("domain", "service", "entity_id", "data", "tts_engine")]
     [ToolRisk(RiskLevel.SensitiveControl)]
     [McpServerTool(Name = "ha_sensitive_control", ReadOnly = false, Destructive = true, OpenWorld = false, UseStructuredContent = true)]
-    [Description("Engedélyezett zár, érzékeny cover vagy media_player speak felolvasás a gate jóváhagyásával.")]
+    [Description("Engedélyezett zár és érzékeny cover vezérlése a gate jóváhagyásával. A media_player speak felolvasáshoz csendes órákon kívül a ha_control használandó; először azt hívd. Felolvasásra a ha_sensitive_control csak akkor választandó, ha a gate a csendes órákra hivatkozva elutasította a ha_control kérést; ezen az úton a gate jóváhagyást kér. Az időablakról és a jogosultságról a gate dönt, nem az agent saját órája. Policy-, entitás-, hangerő-, szöveg-, kvóta- vagy hálózati hiba esetén ne válts sensitive útra.")]
     public Task<CallToolResult> SensitiveControl(string domain, string service, string entity_id, CancellationToken cancellationToken, JsonElement? data = null) =>
         throw new GateToolException("A művelet csak a jóváhagyási kapun hajtható végre.");
 }
