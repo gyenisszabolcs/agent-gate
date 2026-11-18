@@ -164,7 +164,7 @@ public sealed class HomeAssistantControlService(IServiceProvider services, Contr
             var state = await Client.GetStateAsync(request.EntityId, cancellationToken);
             if (!HomeAssistantReadProjection.IsSafe(state)) throw ControlPolicy.Denied();
             var result = HomeAssistantReadProjection.State(state);
-            result["attributes"] = HomeAssistantReadProjection.Attributes(state.Attributes);
+            result["attributes"] = HomeAssistantReadProjection.Attributes(state);
             return JsonSerializer.SerializeToElement(result);
         }
         catch (Exception) when (attempted)

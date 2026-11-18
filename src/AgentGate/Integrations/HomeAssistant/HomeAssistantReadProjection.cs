@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using AgentGate.Secrets;
 
 namespace AgentGate.Integrations.HomeAssistant;
 
@@ -7,6 +8,7 @@ internal static class HomeAssistantReadProjection
 {
     private static readonly string[] AttributeNames =
         ["friendly_name", "unit_of_measurement", "device_class", "state_class", "icon"];
+    private static readonly string[] MediaTextNames = ["media_title", "media_artist", "media_content_type"];
     private static readonly string[] LocationNames =
         ["latitude", "longitude", "gps", "coordinate", "altitude", "elevation", "course", "speed", "radius"];
 
@@ -50,12 +52,23 @@ internal static class HomeAssistantReadProjection
         return result;
     }
 
-    public static Dictionary<string, string> Attributes(JsonElement source)
+    public static Dictionary<string, object> Attributes(HomeAssistantState state)
     {
-        var result = new Dictionary<string, string>();
+        var source = state.Attributes;
+        var result = new Dictionary<string, object>();
         foreach (var name in AttributeNames)
             if (source.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String && !LocationText(value.GetString()!))
                 result[name] = value.GetString()!;
+        if (state.EntityId.StartsWith("media_player.", StringComparison.Ordinal))
+        {
+            foreach (var name in MediaTextNames)
+                if (source.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String && !LocationText(value.GetString()!))
+                    result[name] = SecretRedactor.RedactText(value.GetString())!;
+            if (source.TryGetProperty("volume_level", out var volume) && Control.ControlNumber.InRange(volume, 0, 1))
+                result["volume_level"] = volume;
+            if (source.TryGetProperty("is_volume_muted", out var muted) && muted.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                result["is_volume_muted"] = muted.GetBoolean();
+        }
         return result;
     }
 
@@ -66,6 +79,7 @@ internal static class HomeAssistantReadProjection
             if (state.Attributes.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String)
                 result[name] = value.GetString();
         if (state.LastChanged is not null) result["last_changed"] = state.LastChanged;
+        if (state.EntityId.StartsWith("media_player.", StringComparison.Ordinal)) result["attributes"] = Attributes(state);
         return result;
     }
 }
