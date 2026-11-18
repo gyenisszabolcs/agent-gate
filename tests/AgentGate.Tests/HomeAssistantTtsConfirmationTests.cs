@@ -28,6 +28,70 @@ public sealed class HomeAssistantTtsConfirmationTests
         while (!condition()) await Task.Delay(1, timeout.Token);
     }
 
+    [Theory]
+    [InlineData(5_000)]
+    [InlineData(1)]
+    public async Task EarlyTimerWakeupCannotStartNextGetBeforeMonotonicMinimum(long remainingTicks)
+    {
+        var clock = new Clock();
+        await using var f = Fixture(clock);
+        var reads = new System.Collections.Concurrent.ConcurrentQueue<long>();
+        f.Respond = (request, _) =>
+        {
+            if (request.Method == HttpMethod.Get)
+            {
+                reads.Enqueue(clock.GetTimestamp());
+                if (reads.Count == 2) f.Attributes = JsonSerializer.SerializeToElement(new { volume_level = 0.4 });
+            }
+            return Task.FromResult(f.Response(request));
+        };
+        var service = f.App.Services.GetRequiredService<HomeAssistantControlService>();
+        var call = service.ExecuteAsync(Args(), RiskLevel.Control, CancellationToken.None);
+        await WaitUntil(() => clock.HasTimer(TimeSpan.FromMilliseconds(500)));
+        var remaining = TimeSpan.FromTicks(remainingTicks);
+        // Csak az 500 ms-os timer jelez korán; ugyanaz a monoton óra még a határ előtt jár.
+        clock.FireEarly(TimeSpan.FromMilliseconds(500), TimeSpan.FromMilliseconds(500) - remaining);
+        await WaitUntil(() => reads.Count > 1 || call.IsCompleted || clock.HasTimer(TimeSpan.FromMilliseconds(1)));
+        Assert.True(reads.Count == 1, $"Korai második GET: virtuális monoton idő={clock.GetTimestamp()} tick, GET={reads.Count}.");
+        Assert.False(call.IsCompleted);
+        // A pozitív szubmilliszekundumos maradék nem lehet szinkron Task.Delay(0) ciklus.
+        Assert.True(clock.HasTimer(TimeSpan.FromMilliseconds(1)), "A maradékhoz nincs pozitív, aszinkron timer.");
+        clock.Advance(remaining);
+        Assert.Single(reads);
+        clock.Advance(TimeSpan.FromMilliseconds(1));
+        await call.WaitAsync(TimeSpan.FromSeconds(5));
+        var times = reads.ToArray();
+        Assert.Equal(2, times.Length);
+        Assert.True(TimeSpan.FromTicks(times[1] - times[0]) >= TimeSpan.FromMilliseconds(500));
+        Assert.True(TimeSpan.FromTicks(times[1]) < TimeSpan.FromSeconds(3));
+        Assert.Equal(2, f.Posts);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task EarlyWakeupRemainderHonorsOriginalDeadlineAndCallerCancellation(bool callerCancels)
+    {
+        var clock = new Clock();
+        await using var f = Fixture(clock);
+        using var caller = new CancellationTokenSource();
+        var service = f.App.Services.GetRequiredService<HomeAssistantControlService>();
+        var call = service.ExecuteAsync(Args(), RiskLevel.Control, caller.Token);
+        await WaitUntil(() => clock.HasTimer(TimeSpan.FromMilliseconds(500)));
+        clock.FireEarly(TimeSpan.FromMilliseconds(500), TimeSpan.FromMilliseconds(499.5));
+        await WaitUntil(() => clock.HasTimer(TimeSpan.FromMilliseconds(1)) ||
+            f.Calls.Count(c => c.StartsWith("GET", StringComparison.Ordinal)) > 1);
+        Assert.Equal(1, f.Calls.Count(c => c.StartsWith("GET", StringComparison.Ordinal)));
+        if (callerCancels) caller.Cancel();
+        else clock.Advance(TimeSpan.FromSeconds(3) - TimeSpan.FromTicks(clock.GetTimestamp()));
+        var error = await Assert.ThrowsAnyAsync<Exception>(() => call.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal((callerCancels ? "A felolvasási művelet megszakadt." : ConfirmationTimeout) + Effects, error.Message);
+        f.Attributes = JsonSerializer.SerializeToElement(new { volume_level = 0.4 });
+        clock.Advance(TimeSpan.FromSeconds(10));
+        Assert.Equal(1, f.Posts);
+        Assert.Equal(1, f.Calls.Count(c => c.StartsWith("GET", StringComparison.Ordinal)));
+    }
+
     [Fact]
     public async Task DelayedVolumeIsConfirmedWithSpacedReadsBeforeSpeakingOnce()
     {
@@ -427,6 +491,18 @@ public sealed class HomeAssistantTtsConfirmationTests
                 foreach (var timer in ready) timer.Due = timer.Period > TimeSpan.Zero ? ticks + timer.Period.Ticks : null;
             }
             foreach (var timer in ready) timer.Callback(timer.State);
+        }
+        public void FireEarly(TimeSpan requestedDelay, TimeSpan elapsed)
+        {
+            ManualTimer timer;
+            lock (sync)
+            {
+                timer = timers.Single(t => t.Due is { } due && due - ticks == requestedDelay.Ticks);
+                Assert.True(elapsed > TimeSpan.Zero && elapsed < requestedDelay);
+                ticks += elapsed.Ticks;
+                timer.Due = null;
+            }
+            timer.Callback(timer.State);
         }
         private sealed class ManualTimer(Clock owner, TimerCallback callback, object? state) : ITimer
         {

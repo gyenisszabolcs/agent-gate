@@ -16,6 +16,30 @@ namespace AgentGate.Tests;
 public sealed class SecretSelfTestTests
 {
     [Fact]
+    public async Task SelfTestDoesNotMistakeWarmCacheForFreshBitwardenAccess()
+    {
+        var id = Guid.NewGuid();
+        var hidden = NewSecret();
+        var raw = new FakeProvider((_, _) => Task.FromResult(hidden));
+        await using var cache = new CachedSecretProvider(raw, TimeProvider.System);
+        var warm = await cache.GetSecretLeaseAsync(id);
+        var log = new CaptureLogger();
+        await using var services = new ServiceCollection().AddSingleton<ISecretProvider>(cache).BuildServiceProvider();
+        using var logging = LoggerFactory.Create(builder => builder.AddProvider(log));
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Secrets:SelfTestSecretId"] = id.ToString()
+        }).Build();
+        using var service = new SecretSelfTestService(configuration, services, logging.CreateLogger<SecretSelfTestService>());
+        await service.StartAsync(default);
+        await service.ExecuteTask!.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(2, raw.Calls);
+        Assert.Same(warm, await cache.GetSecretLeaseAsync(id));
+        AssertSafe(log, id.ToString(), hidden);
+        Assert.True(log.Entries.Single().Message == "A Bitwarden önteszt sikeres.", "Az önteszt nem friss sikeres olvasást jelzett.");
+    }
+
+    [Fact]
     public async Task ProgramReadsConfiguredSecretExactlyOnceAndLogsOnlyFixedSuccess()
     {
         var id = Guid.NewGuid();

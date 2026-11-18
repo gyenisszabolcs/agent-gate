@@ -26,7 +26,11 @@ builder.Services.PostConfigure<LoggerFilterOptions>(options =>
     options.Rules.Add(new LoggerFilterRule(null, "ModelContextProtocol.Server.", LogLevel.None, null));
 });
 builder.Services.AddHostedService<SecretSelfTestService>();
-builder.Services.AddSingleton<ISecretProvider>(_ => new BitwardenSecretProvider(credentialOnly: true));
+builder.Services.AddSingleton(_ => new BitwardenSecretProvider(credentialOnly: true));
+builder.Services.AddSingleton<CachedSecretProvider>(services => new CachedSecretProvider(
+    services.GetRequiredService<BitwardenSecretProvider>(), services.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton<ISecretProvider>(services => services.GetRequiredService<CachedSecretProvider>());
+builder.Services.AddHostedService(services => services.GetRequiredService<CachedSecretProvider>());
 builder.Services.Configure<AuditOptions>(builder.Configuration.GetSection("Audit"));
 builder.Services.AddSingleton<IAuditStore>(services => new SqliteAuditStore(
     services.GetRequiredService<IOptions<AuditOptions>>().Value.DatabasePath));

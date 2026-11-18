@@ -317,7 +317,13 @@ public sealed class McpAuditTests
             services.AddMcpServer().WithTools(probe);
         })
         { InitializeKillSwitch = false };
-        Assert.IsType<AgentGate.Secrets.BitwardenSecretProvider>(factory.Services.GetRequiredService<AgentGate.Secrets.ISecretProvider>());
+        var cache = Assert.IsType<AgentGate.Secrets.CachedSecretProvider>(factory.Services.GetRequiredService<AgentGate.Secrets.ISecretProvider>());
+        var raw = Assert.IsType<AgentGate.Secrets.BitwardenSecretProvider>(factory.Services.GetRequiredService<AgentGate.Secrets.BitwardenSecretProvider>());
+        var fields = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        Assert.Same(raw, typeof(AgentGate.Secrets.CachedSecretProvider).GetFields(fields)
+            .Single(field => field.FieldType == typeof(AgentGate.Secrets.ISecretProvider)).GetValue(cache));
+        Assert.True(typeof(AgentGate.Secrets.BitwardenSecretProvider).GetFields(fields)
+            .Single(field => field.FieldType == typeof(bool)).GetValue(raw) is true, "A nyers provider nem kizárólag systemd credentialt használ.");
         Assert.Null(factory.Services.GetService<AgentGate.Integrations.HomeAssistant.HomeAssistantClient>());
         using var read = await CallAsync(factory, "count", new { });
         Assert.False(IsError(read));
