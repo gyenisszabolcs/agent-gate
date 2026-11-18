@@ -101,7 +101,7 @@ public sealed class HomeAssistantTools(IServiceProvider services)
         var result = HomeAssistantReadProjection.State(state);
         var areas = (await Read(() => client.GetAreasAsync(cancellationToken))).Where(HomeAssistantReadProjection.IsSafe).ToArray();
         result["area_name"] = areas.FirstOrDefault(area => area.EntityIds.Contains(entity_id, StringComparer.Ordinal))?.AreaName;
-        result["attributes"] = HomeAssistantReadProjection.Attributes(state.Attributes);
+        result["attributes"] = HomeAssistantReadProjection.Attributes(state);
         return Result(result);
     }
 
