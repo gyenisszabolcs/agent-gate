@@ -12,6 +12,7 @@ namespace AgentGate.Integrations.HomeAssistant.Control;
 public sealed class TtsPolicy
 {
     public JsonElement MaximumVolume { get; }
+    public JsonElement FallbackVolume { get; }
     public string? EngineEntityId { get; }
     private readonly TimeOnly start;
     private readonly TimeOnly end;
@@ -31,9 +32,13 @@ public sealed class TtsPolicy
             var tts = root.GetSection("Tts");
             var keys = tts.GetChildren().ToArray();
             if (tts.Value is not null || root.GetChildren().Any(c => c.Key == "Tts") && keys.Length == 0 ||
-                keys.Any(c => c.Key is not ("EngineEntityId" or "QuietHoursStart" or "QuietHoursEnd" or "TimeZone") || c.Value is null || c.GetChildren().Any())) throw Invalid();
+                keys.Any(c => c.Key is not ("EngineEntityId" or "QuietHoursStart" or "QuietHoursEnd" or "TimeZone" or "FallbackVolume") || c.Value is null || c.GetChildren().Any())) throw Invalid();
             EngineEntityId = tts["EngineEntityId"];
             if (EngineEntityId is not null && (!ControlPolicy.CanonicalEntity(EngineEntityId) || !EngineEntityId.StartsWith("tts.", StringComparison.Ordinal))) throw Invalid();
+            using var fallback = JsonDocument.Parse(tts["FallbackVolume"] ?? "0.4");
+            FallbackVolume = fallback.RootElement.Clone();
+            if (!ControlNumber.InRange(FallbackVolume, 0, 1) || ControlNumber.Compare(FallbackVolume, JsonSerializer.SerializeToElement(0)) <= 0 ||
+                (EngineEntityId is not null || keys.Any(c => c.Key == "FallbackVolume")) && !AllowsVolume(FallbackVolume)) throw Invalid();
             if (!TimeOnly.TryParseExact(tts["QuietHoursStart"] ?? "22:00", "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out start) ||
                 !TimeOnly.TryParseExact(tts["QuietHoursEnd"] ?? "07:00", "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out end) || start == end) throw Invalid();
             zone = TimeZoneInfo.FindSystemTimeZoneById(tts["TimeZone"] ?? "Europe/Budapest");
@@ -75,7 +80,7 @@ internal sealed class TtsQuietHoursException() : Exception(SafeMessage)
 
 internal enum TtsFailure
 {
-    VolumeConfirmationTimeout, VolumeRejected, SpeechRejected, UncertainTransport, SafetyDenied, QuietHours, Cancelled
+    VolumeConfirmationTimeout, VolumeRejected, SpeechRejected, UncertainTransport, SafetyDenied, QuietHours, Cancelled, VolumeStateUnconfirmed
 }
 
 // Csak a végrehajtó állítja elő. Nincs tetszőleges szöveg, providerüzenet vagy belső kivétel.
@@ -85,6 +90,7 @@ internal sealed class TtsExecutionException(TtsFailure failure) : Exception(Mess
     private static string MessageFor(TtsFailure value) => (value switch
     {
         TtsFailure.VolumeConfirmationTimeout => "A hangerő-visszaigazolás nem érkezett meg 3 másodpercen belül.",
+        TtsFailure.VolumeStateUnconfirmed => "A biztonságos hangerő nem igazolható: a hangerő- vagy némítási állapot hibás vagy hiányos.",
         TtsFailure.VolumeRejected => "A Home Assistant elutasította a hangerőállítást.",
         TtsFailure.SpeechRejected => "A Home Assistant elutasította a felolvasást.",
         TtsFailure.UncertainTransport => "A Home Assistant hívás eredménye bizonytalan (transport- vagy válaszhiba).",

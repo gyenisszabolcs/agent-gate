@@ -13,7 +13,7 @@ public sealed class HomeAssistantControlTools(AgentGate.Integrations.HomeAssista
     [ToolAuditParameters("domain", "service", "entity_id", "data")]
     [ToolRisk(RiskLevel.Control)]
     [McpServerTool(Name = "ha_control", ReadOnly = false, Destructive = true, OpenWorld = false, UseStructuredContent = true)]
-    [Description("Egy engedélyezett Home Assistant entitás szűk vezérlése. A media_player speak felolvasáshoz csendes órákon kívül a ha_control használandó; először ezt hívd. Felolvasásra a ha_sensitive_control csak akkor választandó, ha a gate a csendes órákra hivatkozva elutasította a ha_control kérést; ezen az úton a gate jóváhagyást kér. Az időablakról és a jogosultságról a gate dönt, nem az agent saját órája. Policy-, entitás-, hangerő-, szöveg-, kvóta- vagy hálózati hiba esetén ne válts sensitive útra.")]
+    [Description("Egy engedélyezett Home Assistant entitás szűk vezérlése. A media_player speak felolvasáshoz csendes órákon kívül a ha_control használandó; először ezt hívd. TTS-nél volume_level csak kifejezett felhasználói hangerőkérés esetén adható; a hiányt ne pótold maximummal vagy kitalált alapértékkel. A gate friss állapot alapján megtartja a biztonságos hangerőt, szükség esetén bekapcsol, plafonra csökkent, némításnál vagy nullánál felold és konfigurált alapra állít, majd visszaigazol. Felolvasásra a ha_sensitive_control csak akkor választandó, ha a gate a csendes órákra hivatkozva elutasította a ha_control kérést; ezen az úton a gate jóváhagyást kér. Az időablakról és a jogosultságról a gate dönt, nem az agent saját órája. Policy-, entitás-, hangerő-, szöveg-, kvóta- vagy hálózati hiba esetén ne válts sensitive útra.")]
     public async Task<CallToolResult> Control(string domain, string service, string entity_id, CancellationToken cancellationToken, JsonElement? data = null)
     {
         var arguments = new Dictionary<string, JsonElement>
@@ -27,10 +27,10 @@ public sealed class HomeAssistantControlTools(AgentGate.Integrations.HomeAssista
         return new CallToolResult { StructuredContent = result, Content = [new TextContentBlock { Text = result.GetRawText() }] };
     }
 
-    [ToolAuditParameters("domain", "service", "entity_id", "data", "tts_engine")]
+    [ToolAuditParameters("domain", "service", "entity_id", "data", "tts_engine", "tts_max_volume", "tts_fallback_volume")]
     [ToolRisk(RiskLevel.SensitiveControl)]
     [McpServerTool(Name = "ha_sensitive_control", ReadOnly = false, Destructive = true, OpenWorld = false, UseStructuredContent = true)]
-    [Description("Engedélyezett zár és érzékeny cover vezérlése a gate jóváhagyásával. A media_player speak felolvasáshoz csendes órákon kívül a ha_control használandó; először azt hívd. Felolvasásra a ha_sensitive_control csak akkor választandó, ha a gate a csendes órákra hivatkozva elutasította a ha_control kérést; ezen az úton a gate jóváhagyást kér. Az időablakról és a jogosultságról a gate dönt, nem az agent saját órája. Policy-, entitás-, hangerő-, szöveg-, kvóta- vagy hálózati hiba esetén ne válts sensitive útra.")]
+    [Description("Engedélyezett zár és érzékeny cover vezérlése a gate jóváhagyásával. A media_player speak felolvasáshoz csendes órákon kívül a ha_control használandó; először azt hívd. TTS-nél volume_level csak kifejezett felhasználói hangerőkérés esetén adható; a hiányt ne pótold maximummal vagy kitalált alapértékkel. A jóváhagyás a biztonságos aktuális hangerő megtartását és a szükséges bekapcsolás, plafonra csökkentés, némításfeloldás és konfigurált alap-hangerő lehetőségét is megmutatja. Felolvasásra a ha_sensitive_control csak akkor választandó, ha a gate a csendes órákra hivatkozva elutasította a ha_control kérést; ezen az úton a gate jóváhagyást kér. Az időablakról és a jogosultságról a gate dönt, nem az agent saját órája. Policy-, entitás-, hangerő-, szöveg-, kvóta- vagy hálózati hiba esetén ne válts sensitive útra.")]
     public Task<CallToolResult> SensitiveControl(string domain, string service, string entity_id, CancellationToken cancellationToken, JsonElement? data = null) =>
         throw new GateToolException("A művelet csak a jóváhagyási kapun hajtható végre.");
 }

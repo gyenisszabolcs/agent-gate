@@ -113,18 +113,31 @@ public sealed class HomeAssistantControlService(IServiceProvider services, Contr
                 }
                 Validate(arguments, risk);
             }
-            var volume = request.Data.GetProperty("volume_level");
-            var volumeRequest = new ControlRequest("media_player", "volume_set", request.EntityId,
-                JsonSerializer.SerializeToElement(new { volume_level = volume }));
-            await Client.PostServiceAsync(volumeRequest, async ct =>
+            async Task Reserve(CancellationToken ct)
             {
                 await Guard(ct);
+                if (reservation is not null) return;
                 reservation = services.GetRequiredService<TtsRateLimiter>().TryReserve();
                 if (reservation is null || !services.GetRequiredService<ControlRateLimiter>().TryAcquire(request.EntityId)) throw new ControlRateLimitException();
-                attempted = true;
-            }, cancellationToken);
-            // A HA elfogadó válasza nem bizonyítja, hogy az eszköz tényleg átvette a hangerőt.
-            await ConfirmVolumeAsync(request, volume, Guard, cancellationToken);
+            }
+            JsonElement volume;
+            if (!request.Data.TryGetProperty("volume_level", out volume))
+            {
+                volume = await new TtsVolumeRecovery(Client, policy.Media, services.GetRequiredService<TimeProvider>())
+                    .ResolveAsync(request.EntityId, Reserve, () => attempted = true, cancellationToken);
+            }
+            else
+            {
+                var volumeRequest = new ControlRequest("media_player", "volume_set", request.EntityId,
+                    JsonSerializer.SerializeToElement(new { volume_level = volume }));
+                await Client.PostServiceAsync(volumeRequest, async ct =>
+                {
+                    await Reserve(ct);
+                    attempted = true;
+                }, cancellationToken);
+                // A HA elfogadó válasza nem bizonyítja, hogy az eszköz tényleg átvette a hangerőt.
+                await ConfirmVolumeAsync(request, volume, Guard, cancellationToken);
+            }
             var speech = new ControlRequest("tts", "speak", policy.Media.EngineEntityId!, JsonSerializer.SerializeToElement(new
             {
                 media_player_entity_id = request.EntityId,
@@ -136,6 +149,7 @@ public sealed class HomeAssistantControlService(IServiceProvider services, Contr
             {
                 await Guard(ct);
                 reservation!.Complete();
+                attempted = true;
             }, cancellationToken);
             return JsonSerializer.SerializeToElement(new { entity_id = request.EntityId, service = "speak", volume_level = volume, status = "elküldve" });
         }

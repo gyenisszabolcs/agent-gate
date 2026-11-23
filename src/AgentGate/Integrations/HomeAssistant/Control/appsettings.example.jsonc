@@ -64,6 +64,8 @@
     "MediaPlayerMaxVolume": 0.6,
     "Tts": {
       "EngineEntityId": "tts.fiktiv_motor",
+      // Pozitív, legfeljebb MediaPlayerMaxVolume; nincs rejtett clamp.
+      "FallbackVolume": 0.4,
       "QuietHoursStart": "22:00",
       "QuietHoursEnd": "07:00",
       "TimeZone": "Europe/Budapest"
