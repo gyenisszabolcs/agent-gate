@@ -149,7 +149,6 @@ public sealed class ControlPolicy
             if (service == "speak")
             {
                 if (!values.ContainsKey("message")) throw Denied();
-                values.TryAdd("volume_level", Media.MaximumVolume);
             }
         }
         return new(domain, service, entity, JsonSerializer.SerializeToElement(values));

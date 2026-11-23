@@ -40,6 +40,8 @@ public sealed class HomeAssistantControlDescriptionTests
 
         var description = tool.GetProperty("description").GetString();
         Assert.NotNull(description);
+        Assert.Contains("volume_level csak kifejezett felhasználói hangerőkérés", description, StringComparison.Ordinal);
+        Assert.Contains("ne pótold maximummal", description, StringComparison.Ordinal);
         Assert.Contains("media_player speak felolvasás", description, StringComparison.Ordinal);
         Assert.Contains("csendes órákon kívül a ha_control", description, StringComparison.Ordinal);
         Assert.Contains("Felolvasásra a ha_sensitive_control csak akkor", description, StringComparison.Ordinal);

@@ -108,18 +108,34 @@ public sealed class ApprovalPushFormatter(Func<TimeZoneInfo>? timeZone = null)
     {
         // A JSON-ba ágyazott JSON Unicode-escape-jei és az általános 512-es vágás
         // eltakarhatnák a jóváhagyandó szöveget/motort. TTS-nél nincs csonkítás.
-        if (root.EnumerateObject().Count() != 5) throw InvalidSummary();
         var engine = Text(root, "tts_engine");
         if (!ControlPolicy.CanonicalEntity(engine) || !engine.StartsWith("tts.", StringComparison.Ordinal)) throw InvalidSummary();
         using var data = JsonDocument.Parse(Text(root, "data"), new JsonDocumentOptions { MaxDepth = 16 });
         var payload = data.RootElement;
-        if (payload.ValueKind != JsonValueKind.Object || payload.EnumerateObject().Count() != 2 ||
-            !payload.TryGetProperty("message", out var message) || message.ValueKind != JsonValueKind.String || message.GetString()!.Length is < 1 or > 200 ||
-            !payload.TryGetProperty("volume_level", out var volume) || !ControlNumber.InRange(volume, 0, 1)) throw InvalidSummary();
+        if (payload.ValueKind != JsonValueKind.Object ||
+            !payload.TryGetProperty("message", out var message) || message.ValueKind != JsonValueKind.String || message.GetString()!.Length is < 1 or > 200) throw InvalidSummary();
+        var explicitVolume = payload.TryGetProperty("volume_level", out var volume);
+        if (payload.EnumerateObject().Count() != (explicitVolume ? 2 : 1) || root.EnumerateObject().Count() != (explicitVolume ? 5 : 7)) throw InvalidSummary();
+        string volumeIntent;
+        if (explicitVolume)
+        {
+            if (!ControlNumber.InRange(volume, 0, 1)) throw InvalidSummary();
+            volumeIntent = volume.GetRawText();
+        }
+        else
+        {
+            using var maximum = JsonDocument.Parse(Text(root, "tts_max_volume"));
+            using var fallback = JsonDocument.Parse(Text(root, "tts_fallback_volume"));
+            if (!ControlNumber.InRange(maximum.RootElement, 0, 1) || !ControlNumber.InRange(fallback.RootElement, 0, 1) ||
+                ControlNumber.Compare(fallback.RootElement, JsonSerializer.SerializeToElement(0)) <= 0 ||
+                ControlNumber.Compare(fallback.RootElement, maximum.RootElement) > 0) throw InvalidSummary();
+            volumeIntent = "nincs kifejezett hangerőkérés; biztonságos aktuális hangerő megtartása. Szükség esetén bekapcsolás; plafonra csökkentés: " + maximum.RootElement.GetRawText() +
+                "; némítás vagy nulla esetén némításfeloldás és alap-hangerő: " + fallback.RootElement.GetRawText() + ". Csak visszaigazolt biztonságos állapoton felolvasás.";
+        }
         var fields = new Dictionary<string, string>
         {
             ["domain"] = Text(root, "domain"), ["service"] = Text(root, "service"), ["entity_id"] = Text(root, "entity_id"),
-            ["tts_engine"] = engine, ["volume_level"] = volume.GetRawText(), ["message"] = message.GetString()!
+            ["tts_engine"] = engine, ["volume_level"] = volumeIntent, ["message"] = message.GetString()!
         };
         var lines = fields.Select(p => p.Key + ": " + SafeLine(p.Value, 8192, token));
         var text = string.Join('\n', lines);

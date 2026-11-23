@@ -18,16 +18,27 @@ public sealed class HomeAssistantControlOperation(HomeAssistantControlService co
             ["entity_id"] = request.EntityId,
             ["data"] = request.Data.GetRawText()
         };
-        if (request.Domain == "media_player" && request.Service == "speak") parameters["tts_engine"] = policy.Media.EngineEntityId;
+        if (request.Domain == "media_player" && request.Service == "speak")
+        {
+            parameters["tts_engine"] = policy.Media.EngineEntityId;
+            if (!request.Data.TryGetProperty("volume_level", out _))
+            {
+                parameters["tts_max_volume"] = policy.Media.MaximumVolume.GetRawText();
+                parameters["tts_fallback_volume"] = policy.Media.FallbackVolume.GetRawText();
+            }
+        }
         return new PreparedOperation(Tool, Risk, parameters);
     }
     public async Task<string> ExecuteAsync(PreparedOperation operation, CancellationToken cancellationToken)
     {
         var tts = operation.Parameters.GetValueOrDefault("domain") == "media_player" && operation.Parameters.GetValueOrDefault("service") == "speak";
-        if (operation.Tool != Tool || operation.Risk != Risk || operation.Parameters.Count != (tts ? 5 : 4) ||
-            tts && operation.Parameters.GetValueOrDefault("tts_engine") != policy.Media.EngineEntityId) throw ControlPolicy.Denied();
         using var data = JsonDocument.Parse(operation.Parameters["data"]!);
-        var arguments = operation.Parameters.Where(p => p.Key != "tts_engine").ToDictionary(p => p.Key, p => p.Key == "data"
+        var implicitVolume = tts && !data.RootElement.TryGetProperty("volume_level", out _);
+        if (operation.Tool != Tool || operation.Risk != Risk || operation.Parameters.Count != (implicitVolume ? 7 : tts ? 5 : 4) ||
+            implicitVolume && (operation.Parameters.GetValueOrDefault("tts_max_volume") != policy.Media.MaximumVolume.GetRawText() ||
+                operation.Parameters.GetValueOrDefault("tts_fallback_volume") != policy.Media.FallbackVolume.GetRawText()) ||
+            tts && operation.Parameters.GetValueOrDefault("tts_engine") != policy.Media.EngineEntityId) throw ControlPolicy.Denied();
+        var arguments = operation.Parameters.Where(p => p.Key is not ("tts_engine" or "tts_max_volume" or "tts_fallback_volume")).ToDictionary(p => p.Key, p => p.Key == "data"
             ? data.RootElement.Clone() : JsonSerializer.SerializeToElement(p.Value), StringComparer.Ordinal);
         return (await control.ExecuteAsync(arguments, Risk, cancellationToken)).GetRawText();
     }

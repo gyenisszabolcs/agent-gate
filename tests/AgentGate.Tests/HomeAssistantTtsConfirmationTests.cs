@@ -12,6 +12,287 @@ namespace AgentGate.Tests;
 
 public sealed class HomeAssistantTtsConfirmationTests
 {
+    [Fact]
+    public async Task ImplicitFallbackWaitsForMutedTargetThenConfirmsUnmutedFinalState()
+    {
+        var clock = new Clock();
+        await using var f = Fixture(clock);
+        var reads = new List<long>();
+        var level = 0.95;
+        var muted = true;
+        var unmuteRequested = false;
+        var unsafeUnmute = false;
+        f.Respond = async (req, ct) =>
+        {
+            var path = req.RequestUri!.AbsolutePath;
+            if (req.Method == HttpMethod.Get)
+            {
+                reads.Add(clock.GetTimestamp());
+                // A volume_set ACK után még egy régi állapot érkezik, majd a cél még némítva igazolódik.
+                if (reads.Count >= 3) level = 0.4;
+                // Az unmute ACK sem végállapot: annak alkalmazása is késik egy olvasást.
+                if (unmuteRequested && reads.Count >= 5) muted = false;
+            }
+            if (path.EndsWith("/volume_set", StringComparison.Ordinal))
+            {
+                using var body = JsonDocument.Parse(await req.Content!.ReadAsStringAsync(ct));
+                Assert.Equal(0.4, body.RootElement.GetProperty("volume_level").GetDouble());
+            }
+            if (path.EndsWith("/volume_mute", StringComparison.Ordinal))
+            {
+                using var body = JsonDocument.Parse(await req.Content!.ReadAsStringAsync(ct));
+                Assert.False(body.RootElement.GetProperty("is_volume_muted").GetBoolean());
+                unsafeUnmute = level != 0.4 || !muted || reads.Count < 3;
+                unmuteRequested = true;
+            }
+            f.Attributes = JsonSerializer.SerializeToElement(new { volume_level = level, is_volume_muted = muted });
+            return f.Response(req);
+        };
+        var call = f.Call("ha_control", "media_player", "speak", "{\"message\":\"Teszt\"}");
+        for (var i = 0; i < 4; i++)
+        {
+            await WaitUntil(() => call.IsCompleted || clock.HasTimer(TimeSpan.FromMilliseconds(500)));
+            Assert.False(call.IsCompleted);
+            if (i < 2) Assert.DoesNotContain("POST /api/services/media_player/volume_mute", f.Calls);
+            Assert.DoesNotContain("POST /api/services/tts/speak", f.Calls);
+            clock.Advance(TimeSpan.FromMilliseconds(500));
+        }
+        using var reply = await call.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(ControlFixture.Failed(reply));
+        Assert.False(unsafeUnmute);
+        Assert.Equal(new long[] { 0, 5_000_000, 10_000_000, 15_000_000, 20_000_000 }, reads);
+        Assert.Equal(new[] { "GET /api/states/media_player.room", "POST /api/services/media_player/volume_set",
+            "GET /api/states/media_player.room", "GET /api/states/media_player.room", "POST /api/services/media_player/volume_mute",
+            "GET /api/states/media_player.room", "GET /api/states/media_player.room", "POST /api/services/tts/speak" }, f.Calls.ToArray());
+    }
+
+    [Fact]
+    public async Task ImplicitFallbackNeverUnmutesWithoutTargetConfirmation()
+    {
+        var clock = new Clock();
+        await using var f = Fixture(clock);
+        f.Attributes = JsonSerializer.SerializeToElement(new { volume_level = 0.95, is_volume_muted = true });
+        var call = f.Call("ha_control", "media_player", "speak", "{\"message\":\"Teszt\"}");
+        for (var i = 0; i < 5; i++)
+        {
+            await WaitUntil(() => call.IsCompleted || clock.HasTimer(TimeSpan.FromMilliseconds(500)));
+            Assert.False(call.IsCompleted);
+            clock.Advance(TimeSpan.FromMilliseconds(500));
+        }
+        using var reply = await call.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(ControlFixture.Failed(reply));
+        Assert.Equal(ConfirmationTimeout + Effects, Text(reply));
+        Assert.Equal(6, f.Calls.Count(c => c.StartsWith("GET", StringComparison.Ordinal)));
+        Assert.Equal(new[] { "POST /api/services/media_player/volume_set" }, f.Calls.Where(c => c.StartsWith("POST", StringComparison.Ordinal)).ToArray());
+    }
+
+    [Fact]
+    public async Task ImplicitFallbackFinalConfirmationKeepsOriginalDeadline()
+    {
+        var clock = new Clock();
+        await using var f = Fixture(clock);
+        var reads = 0;
+        f.Respond = (req, _) =>
+        {
+            if (req.Method == HttpMethod.Get)
+            {
+                reads++;
+                f.Attributes = JsonSerializer.SerializeToElement(new { volume_level = reads == 1 ? 0.95 : 0.4, is_volume_muted = true });
+            }
+            if (req.RequestUri!.AbsolutePath.EndsWith("/volume_set", StringComparison.Ordinal))
+                clock.Advance(TimeSpan.FromSeconds(2));
+            return Task.FromResult(f.Response(req));
+        };
+        var call = f.Call("ha_control", "media_player", "speak", "{\"message\":\"Teszt\"}");
+        await WaitUntil(() => reads == 2 && clock.HasTimer(TimeSpan.FromMilliseconds(500)));
+        Assert.Equal(2, reads);
+        Assert.Equal(1, f.Calls.Count(c => c == "POST /api/services/media_player/volume_mute"));
+        clock.Advance(TimeSpan.FromMilliseconds(500));
+        await WaitUntil(() => reads == 3 && clock.HasTimer(TimeSpan.FromMilliseconds(500)));
+        Assert.False(call.IsCompleted);
+        clock.Advance(TimeSpan.FromMilliseconds(500));
+        using var reply = await call.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(ControlFixture.Failed(reply));
+        Assert.Equal(ConfirmationTimeout + Effects, Text(reply));
+        clock.Advance(TimeSpan.FromSeconds(10));
+        Assert.Equal(3, reads);
+        Assert.Equal(2, f.Posts);
+        Assert.DoesNotContain("POST /api/services/tts/speak", f.Calls);
+    }
+
+    private static Dictionary<string, JsonElement> ImplicitArgs() => HomeAssistantControlPolicyTests.Arguments(
+        "media_player", "speak", "{\"message\":\"Teszt\"}");
+
+    private sealed class PendingSafetyCheck : IKillSwitchStateSource
+    {
+        public bool Block { get; set; }
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public async ValueTask<bool> IsEnabledAsync(CancellationToken cancellationToken)
+        {
+            if (!Block) return false;
+            Entered.TrySetResult();
+            await Release.Task;
+            return false;
+        }
+    }
+
+    [Fact]
+    public async Task ImplicitDeadlineIncludesInitialSafetyGuardAndLateGuardCannotReachHa()
+    {
+        var clock = new Clock();
+        var safety = new PendingSafetyCheck();
+        await using var f = Fixture(clock, s => s.AddSingleton<IKillSwitchStateSource>(safety));
+        var service = f.App.Services.GetRequiredService<HomeAssistantControlService>();
+        safety.Block = true;
+        var call = service.ExecuteAsync(ImplicitArgs(), RiskLevel.Control, CancellationToken.None);
+        await safety.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        clock.Advance(TimeSpan.FromSeconds(3));
+        var error = await Assert.ThrowsAnyAsync<Exception>(() => call.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Contains("3 másodperc", error.Message);
+        safety.Release.TrySetResult();
+        clock.Advance(TimeSpan.FromSeconds(10));
+        Assert.Empty(f.Calls);
+    }
+
+    [Fact]
+    public async Task ImplicitBodyReadIsCancelledAtOriginalDeadline()
+    {
+        var clock = new Clock();
+        await using var f = Fixture(clock);
+        using var body = new PendingBody();
+        f.Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(body) });
+        var call = f.App.Services.GetRequiredService<HomeAssistantControlService>().ExecuteAsync(ImplicitArgs(), RiskLevel.Control, CancellationToken.None);
+        var token = await body.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        clock.Advance(TimeSpan.FromSeconds(3));
+        var error = await Assert.ThrowsAnyAsync<Exception>(() => call.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Contains("3 másodperc", error.Message);
+        Assert.True(token.IsCancellationRequested);
+        Assert.Equal(0, f.Posts);
+    }
+
+    [Fact]
+    public async Task LateImplicitVolumePostCannotStartSpeechOrRepeatAfterDeadline()
+    {
+        var clock = new Clock();
+        await using var f = Fixture(clock);
+        f.Attributes = JsonSerializer.SerializeToElement(new { volume_level = 0.9, is_volume_muted = false });
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        f.Respond = async (request, _) =>
+        {
+            if (request.Method == HttpMethod.Post)
+            {
+                entered.TrySetResult();
+                await release.Task;
+                finished.TrySetResult();
+            }
+            return f.Response(request);
+        };
+        var call = f.App.Services.GetRequiredService<HomeAssistantControlService>().ExecuteAsync(ImplicitArgs(), RiskLevel.Control, CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        clock.Advance(TimeSpan.FromSeconds(3));
+        var error = await Assert.ThrowsAnyAsync<Exception>(() => call.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Contains("3 másodperc", error.Message);
+        release.TrySetResult();
+        await finished.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        clock.Advance(TimeSpan.FromSeconds(10));
+        Assert.Equal(new[] { "GET /api/states/media_player.room", "POST /api/services/media_player/volume_set" }, f.Calls.ToArray());
+    }
+
+    [Fact]
+    public async Task ImplicitRecoveryUsesMonotonicReadSpacingEvenAfterEarlyTimer()
+    {
+        var clock = new Clock();
+        await using var f = Fixture(clock);
+        var reads = new System.Collections.Concurrent.ConcurrentQueue<long>();
+        f.Respond = (request, _) =>
+        {
+            if (request.Method == HttpMethod.Get)
+            {
+                reads.Enqueue(clock.GetTimestamp());
+                f.Attributes = JsonSerializer.SerializeToElement(new { volume_level = reads.Count == 1 ? 0.9 : 0.6, is_volume_muted = false });
+            }
+            return Task.FromResult(f.Response(request));
+        };
+        var service = f.App.Services.GetRequiredService<HomeAssistantControlService>();
+        var call = service.ExecuteAsync(ImplicitArgs(), RiskLevel.Control, CancellationToken.None);
+        await WaitUntil(() => clock.HasTimer(TimeSpan.FromMilliseconds(500)));
+        clock.FireEarly(TimeSpan.FromMilliseconds(500), TimeSpan.FromMilliseconds(499.5));
+        await WaitUntil(() => clock.HasTimer(TimeSpan.FromMilliseconds(1)) || call.IsCompleted || reads.Count > 1);
+        Assert.Single(reads);
+        Assert.False(call.IsCompleted);
+        clock.Advance(TimeSpan.FromMilliseconds(1));
+        await call.WaitAsync(TimeSpan.FromSeconds(5));
+        var times = reads.ToArray();
+        Assert.Equal(2, times.Length);
+        Assert.True(TimeSpan.FromTicks(times[1] - times[0]) >= TimeSpan.FromMilliseconds(500));
+        Assert.Equal(2, f.Posts);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LateImplicitReadCannotStartEffectsAfterDeadlineOrCancellation(bool callerCancels)
+    {
+        var clock = new Clock();
+        await using var f = Fixture(clock);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        f.Respond = async (request, _) =>
+        {
+            entered.TrySetResult();
+            await release.Task;
+            f.Attributes = JsonSerializer.SerializeToElement(new { volume_level = 0.25, is_volume_muted = false });
+            finished.TrySetResult();
+            return f.Response(request);
+        };
+        using var caller = new CancellationTokenSource();
+        var service = f.App.Services.GetRequiredService<HomeAssistantControlService>();
+        var call = service.ExecuteAsync(ImplicitArgs(), RiskLevel.Control, caller.Token);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        if (callerCancels) caller.Cancel();
+        else clock.Advance(TimeSpan.FromSeconds(3));
+        var error = await Assert.ThrowsAnyAsync<Exception>(() => call.WaitAsync(TimeSpan.FromSeconds(5)));
+        if (!callerCancels) Assert.Contains("3 másodperc", error.Message);
+        release.TrySetResult();
+        await finished.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        clock.Advance(TimeSpan.FromSeconds(10));
+        Assert.Equal(0, f.Posts);
+        Assert.Single(f.Calls);
+    }
+
+    [Fact]
+    public async Task ImplicitReadAndSpeechKeepMediaLockAgainstConcurrentVolumeWrite()
+    {
+        var clock = new Clock();
+        await using var f = Fixture(clock);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        f.Attributes = JsonSerializer.SerializeToElement(new { volume_level = 0.25, is_volume_muted = false });
+        f.Respond = async (req, _) =>
+        {
+            if (req.Method == HttpMethod.Get && !entered.Task.IsCompleted)
+            {
+                entered.TrySetResult();
+                await release.Task;
+            }
+            return f.Response(req);
+        };
+        var service = f.App.Services.GetRequiredService<HomeAssistantControlService>();
+        var speech = service.ExecuteAsync(ImplicitArgs(), RiskLevel.Control, CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var write = service.ExecuteAsync(HomeAssistantControlPolicyTests.Arguments("media_player", "volume_set", "{\"volume_level\":0.6}"), RiskLevel.Control, CancellationToken.None);
+        Assert.Single(f.Calls);
+        Assert.False(write.IsCompleted);
+        release.TrySetResult();
+        await Task.WhenAll(speech, write).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(new[] { "GET /api/states/media_player.room", "POST /api/services/tts/speak",
+            "POST /api/services/media_player/volume_set", "GET /api/states/media_player.room" }, f.Calls.ToArray());
+    }
+
     private static ControlFixture Fixture(Clock clock, Action<IServiceCollection>? configure = null) => new(s =>
     {
         s.AddSingleton(HomeAssistantMediaPlayerTests.Policy());
@@ -239,7 +520,7 @@ public sealed class HomeAssistantTtsConfirmationTests
     {
         var clock = new Clock();
         await using var f = Fixture(clock);
-        using var pending = await f.Call("ha_sensitive_control", "media_player", "speak", "{\"message\":\"Teszt\"}");
+        using var pending = await f.Call("ha_sensitive_control", "media_player", "speak", "{\"message\":\"Teszt\",\"volume_level\":0.6}");
         var outcomeTask = f.Channel.Approve();
         await WaitUntil(() => clock.HasTimer(TimeSpan.FromMilliseconds(500)));
         clock.Advance(TimeSpan.FromSeconds(3));

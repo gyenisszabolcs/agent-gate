@@ -12,13 +12,15 @@ namespace AgentGate.Tests;
 
 public sealed class HomeAssistantMediaPlayerTests
 {
-    internal static ControlPolicy Policy(string extra = "", string domainExtra = "") => HomeAssistantControlPolicyTests.Policy("""
+    internal static ControlPolicy Policy(string extra = "", string domainExtra = "", string ttsExtra = "") => HomeAssistantControlPolicyTests.Policy("""
         {"HomeAssistantControl":{"Domains":{"media_player":{
         "EntityAllowlist":["media_player.room","media_player.other"],
         "ControlServices":["turn_on","turn_off","media_play","media_pause","media_stop","media_next_track","media_previous_track","volume_mute","volume_set","speak"],
         "SensitiveControlServices":["speak"]
         """ + domainExtra + """
-        }},"Tts":{"EngineEntityId":"tts.local"}
+        }},"Tts":{"EngineEntityId":"tts.local"
+        """ + ttsExtra + """
+        }
         """ + extra + "}}");
 
     private static Dictionary<string, JsonElement> Args(string service, string? data = null, string? entity = null) =>
@@ -114,7 +116,7 @@ public sealed class HomeAssistantMediaPlayerTests
     public async Task QuietBoundariesAndDstUseBudapestWallClock(string utc, bool quiet)
     {
         await using var f = Fixture(new Clock { Now = DateTimeOffset.Parse(utc) });
-        using var reply = await f.Call("ha_control", "media_player", "speak", "{\"message\":\"hello\"}");
+        using var reply = await f.Call("ha_control", "media_player", "speak", "{\"message\":\"hello\",\"volume_level\":0.6}");
         Assert.Equal(quiet, ControlFixture.Failed(reply));
         Assert.Equal(quiet ? 0 : 2, f.Posts);
         if (quiet) Assert.Contains("ha_sensitive_control", reply.RootElement.GetRawText());
@@ -183,20 +185,20 @@ public sealed class HomeAssistantMediaPlayerTests
             }
             return f.Response(req);
         };
-        using var pending = await f.Call("ha_sensitive_control", "media_player", "speak", "{\"message\":\"approved\"}");
+        using var pending = await f.Call("ha_sensitive_control", "media_player", "speak", "{\"message\":\"approved\",\"volume_level\":0.6}");
         for (var i = 0; i < 3; i++)
         {
-            using var reply = await f.Call("ha_control", "media_player", "speak", "{\"message\":\"hello\"}");
+            using var reply = await f.Call("ha_control", "media_player", "speak", "{\"message\":\"hello\",\"volume_level\":0.6}");
             Assert.False(ControlFixture.Failed(reply));
         }
         Assert.Equal(ApprovalState.Failed, (await f.Channel.Approve()).State);
         Assert.Equal(6, f.Posts);
         clock.Now = clock.Now.AddSeconds(30);
-        using var stillLimited = await f.Call("ha_control", "media_player", "speak", "{\"message\":\"hello\"}");
+        using var stillLimited = await f.Call("ha_control", "media_player", "speak", "{\"message\":\"hello\",\"volume_level\":0.6}");
         Assert.True(ControlFixture.Failed(stillLimited));
         Assert.Equal(6, f.Posts);
         clock.Now = clock.Now.AddSeconds(30);
-        using var next = await f.Call("ha_control", "media_player", "speak", "{\"message\":\"hello\"}");
+        using var next = await f.Call("ha_control", "media_player", "speak", "{\"message\":\"hello\",\"volume_level\":0.6}");
         Assert.False(ControlFixture.Failed(next));
         Assert.Equal(8, f.Posts);
     }
@@ -211,7 +213,7 @@ public sealed class HomeAssistantMediaPlayerTests
             return req.Method == HttpMethod.Post ? f.Response(req) : new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
             { Content = new StringContent("{\"entity_id\":\"" + req.RequestUri!.Segments[^1] + "\",\"state\":\"on\",\"attributes\":" + f.Attributes.GetRawText() + "}") };
         };
-        var replies = await Task.WhenAll(Enumerable.Range(0, 5).Select(i => f.Call("ha_control", "media_player", "speak", "{\"message\":\"hello\"}", i % 2 == 0 ? "media_player.room" : "media_player.other")));
+        var replies = await Task.WhenAll(Enumerable.Range(0, 5).Select(i => f.Call("ha_control", "media_player", "speak", "{\"message\":\"hello\",\"volume_level\":0.6}", i % 2 == 0 ? "media_player.room" : "media_player.other")));
         try { Assert.Equal(3, replies.Count(r => !ControlFixture.Failed(r))); Assert.Equal(6, f.Posts); }
         finally { foreach (var r in replies) r.Dispose(); }
     }
@@ -226,7 +228,7 @@ public sealed class HomeAssistantMediaPlayerTests
             if (req.Method == HttpMethod.Post) await File.WriteAllTextAsync(f.App.KillSwitchPath, "{\"Enabled\":true}", ct);
             return f.Response(req);
         };
-        using var reply = await f.Call("ha_control", "media_player", "speak", "{\"message\":\"hello\"}");
+        using var reply = await f.Call("ha_control", "media_player", "speak", "{\"message\":\"hello\",\"volume_level\":0.6}");
         Assert.True(ControlFixture.Failed(reply));
         Assert.Equal(1, f.Posts);
     }
@@ -238,7 +240,7 @@ public sealed class HomeAssistantMediaPlayerTests
             Assert.Throws<OptionsValidationException>(() => Policy(",\"MediaPlayerMaxVolume\":" + value));
         foreach (var tts in new[] { "{}", "{\"EngineEntityId\":\"media_player.room\"}", "{\"EngineEntityId\":\"tts.local\",\"QuietHoursStart\":\"25:00\"}", "{\"EngineEntityId\":\"tts.local\",\"TimeZone\":\"unknown\"}", "{\"EngineEntityId\":\"tts.local\",\"QuietHoursStart\":\"07:00\"}" })
             Assert.Throws<OptionsValidationException>(() => HomeAssistantControlPolicyTests.Policy("{\"HomeAssistantControl\":{\"Tts\":" + tts + "}}"));
-        var policy = Policy(",\"MediaPlayerMaxVolume\":0.3");
+        var policy = Policy(",\"MediaPlayerMaxVolume\":0.3", ttsExtra: ",\"FallbackVolume\":0.25");
         policy.Validate(Args("volume_set", "{\"volume_level\":0.3}"), RiskLevel.Control);
         Assert.Throws<GateToolException>(() => policy.Validate(Args("volume_set", "{\"volume_level\":0.300000000000000000001}"), RiskLevel.Control));
         var daytime = HomeAssistantControlPolicyTests.Policy("""
@@ -254,10 +256,10 @@ public sealed class HomeAssistantMediaPlayerTests
     {
         await using var f = Fixture(new Clock());
         f.Respond = (req, _) => Task.FromResult(f.Response(req));
-        using var high = await f.Call("ha_control", "media_player", "speak", "{\"message\":\"hello\"}");
+        using var high = await f.Call("ha_control", "media_player", "speak", "{\"message\":\"hello\",\"volume_level\":0.6}");
         Assert.True(ControlFixture.Failed(high));
         f.Attributes = JsonSerializer.SerializeToElement(new { });
-        using var missing = await f.Call("ha_sensitive_control", "media_player", "speak", "{\"message\":\"hello\"}");
+        using var missing = await f.Call("ha_sensitive_control", "media_player", "speak", "{\"message\":\"hello\",\"volume_level\":0.6}");
         Assert.False(ControlFixture.Failed(missing));
         Assert.Equal(ApprovalState.Failed, (await f.Channel.Approve()).State);
         Assert.Equal(2, f.Posts);
@@ -275,7 +277,7 @@ public sealed class HomeAssistantMediaPlayerTests
             clock.Now = DateTimeOffset.Parse("2026-11-17T21:00:00Z");
             return f.Response(req);
         };
-        using var reply = await f.Call("ha_control", "media_player", "speak", "{\"message\":\"hello\"}");
+        using var reply = await f.Call("ha_control", "media_player", "speak", "{\"message\":\"hello\",\"volume_level\":0.6}");
         Assert.True(ControlFixture.Failed(reply));
         Assert.Equal(1, f.Posts);
         Assert.Contains("ha_sensitive_control", reply.RootElement.GetRawText());
@@ -301,7 +303,7 @@ public sealed class HomeAssistantMediaPlayerTests
     {
         await using var f = Fixture(new Clock());
         f.Respond = (_, _) => throw new HttpRequestException("transport-canary");
-        using var reply = await f.Call("ha_control", "media_player", "speak", "{\"message\":\"password=canary\"}");
+        using var reply = await f.Call("ha_control", "media_player", "speak", "{\"message\":\"password=canary\",\"volume_level\":0.6}");
         Assert.True(ControlFixture.Failed(reply));
         Assert.Equal(1, f.Posts);
         Assert.DoesNotContain("canary", reply.RootElement.GetRawText());
