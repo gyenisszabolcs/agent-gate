@@ -1,4 +1,3 @@
-using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -17,8 +16,19 @@ namespace AgentGate.Tests;
 
 public sealed class HomeAssistantLogsTests
 {
-    internal static string Entry(int index, string message = "rendben", string level = "ERROR", string logger = "homeassistant.components.demo") =>
-        $"2026-11-18 20:00:{index % 60:D2}.000+01:00 {level} (MainThread) [{logger}] {index}: {message}\n";
+    [Fact]
+    public async Task StructuredSystemLogContractIncludesWithheldCount()
+    {
+        await using var fixture = new Fixture("");
+        using var call = await fixture.Call(new { });
+        var data = call.RootElement.GetProperty("result").GetProperty("structuredContent");
+        Assert.True(data.TryGetProperty("withheld_count", out _), "Hiányzik a bejegyzésszintű visszatartási számláló.");
+    }
+
+    internal static string Entry(int index, string message = "rendben", string level = "ERROR", string logger = "homeassistant.components.demo",
+        string? exception = null, string[]? messages = null, long count = 1) =>
+        JsonSerializer.Serialize(new { name = logger, level, message = messages ?? [$"{index}: {message}"], count,
+            first_occurred = 1_000d + index, timestamp = 2_000d + index, exception = exception ?? "" }) + "\n";
 
     [Fact]
     public async Task ReadRouteReturnsLatestMatchesAndAuditsOnlyArguments()
@@ -30,12 +40,14 @@ public sealed class HomeAssistantLogsTests
         var data = result.GetProperty("structuredContent");
         var items = data.GetProperty("items");
         Assert.Equal(2, items.GetArrayLength());
-        Assert.Contains("3: rendben", items[0].GetProperty("text").GetString());
-        Assert.Contains("4: rendben", items[1].GetProperty("text").GetString());
+        Assert.Contains("3: rendben", items[0].GetProperty("messages")[0].GetString());
+        Assert.Contains("4: rendben", items[1].GetProperty("messages")[0].GetString());
         Assert.True(data.GetProperty("truncated").GetBoolean());
         Assert.Equal("ERROR", items[0].GetProperty("level").GetString());
         Assert.Equal("demo", items[0].GetProperty("integration").GetString());
-        Assert.Equal(1, fixture.Handler.Calls);
+        Assert.Equal(0, fixture.Handler.Calls);
+        Assert.Equal(1, fixture.Sockets.Calls);
+        Assert.True(fixture.Sockets.Last!.Disposed && fixture.Sockets.Last.Aborted);
         Assert.Equal(1, fixture.Secrets.Calls);
         Assert.True(fixture.FixedRequest);
         var tool = Assert.Single(fixture.Factory.Services.GetRequiredService<IOptions<McpServerOptions>>().Value.ToolCollection!,
@@ -86,8 +98,8 @@ public sealed class HomeAssistantLogsTests
         var items = data.GetProperty("items");
         Assert.Equal(items.GetArrayLength(), data.GetProperty("returned_count").GetInt32());
         Assert.InRange(items.GetArrayLength(), 1, 20);
-        Assert.DoesNotContain("\uFFFD", items[0].GetProperty("text").GetString());
-        if (variant == "many") Assert.Contains("29:", items[items.GetArrayLength() - 1].GetProperty("text").GetString());
+        Assert.DoesNotContain("\uFFFD", items[0].GetProperty("messages")[0].GetString());
+        if (variant == "many") Assert.Contains("29:", items[items.GetArrayLength() - 1].GetProperty("messages")[0].GetString());
     }
 
     [Fact]
@@ -112,28 +124,31 @@ public sealed class HomeAssistantLogsTests
     [InlineData(-1, 20)]
     [InlineData(1, 1)]
     [InlineData(2, 2)]
-    public async Task DefaultSmallAndHardLimitKeepLatestInFileOrder(int requested, int expected)
+    public async Task DefaultAndSmallLimitsKeepLatestInReversedSourceOrder(int requested, int expected)
     {
         await using var fixture = new Fixture(string.Concat(Enumerable.Range(0, 130).Select(index => Entry(index))));
         using var call = await fixture.Call(requested < 0 ? new { } : new { limit = requested });
         var data = call.RootElement.GetProperty("result").GetProperty("structuredContent");
         Assert.Equal(expected, data.GetProperty("returned_count").GetInt32());
         Assert.True(data.GetProperty("truncated").GetBoolean());
-        Assert.Contains($"{130 - expected}: rendben", data.GetProperty("items")[0].GetProperty("text").GetString());
-        Assert.Contains("129: rendben", data.GetProperty("items")[expected - 1].GetProperty("text").GetString());
+        Assert.Contains($"{130 - expected}: rendben", data.GetProperty("items")[0].GetProperty("messages")[0].GetString());
+        Assert.Contains("129: rendben", data.GetProperty("items")[expected - 1].GetProperty("messages")[0].GetString());
     }
 
     [Fact]
-    public async Task HardLimitCapsAt100WhenByteBudgetAllows()
+    public async Task MaximumRequestedLimitStillHonorsSerializedBudget()
     {
-        var body = string.Concat(Enumerable.Range(0, 130).Select(index => $"2026-11-18 20:00:00.000 INFO (T) [a] {index}\n"));
+        var body = string.Concat(Enumerable.Range(0, 130).Select(index => JsonSerializer.Serialize(new
+            { name = "a", level = "WARNING", message = new[] { index.ToString() }, count = 1, first_occurred = 0, timestamp = 0, exception = "" }) + "\n"));
         await using var fixture = new Fixture(body);
         using var call = await fixture.Call(new { limit = 100 });
         var data = call.RootElement.GetProperty("result").GetProperty("structuredContent");
-        Assert.Equal(100, data.GetProperty("returned_count").GetInt32());
+        // A gazdagabb strukturált metaadat miatt a bájtkeret 100 előtt is elfogyhat.
+        Assert.InRange(data.GetProperty("returned_count").GetInt32(), 1, 100);
+        Assert.InRange(Encoding.UTF8.GetByteCount(call.RootElement.GetProperty("result").GetRawText()), 1, 32_000);
         Assert.True(data.GetProperty("truncated").GetBoolean());
-        Assert.EndsWith(" 30", data.GetProperty("items")[0].GetProperty("text").GetString());
-        Assert.EndsWith(" 129", data.GetProperty("items")[99].GetProperty("text").GetString());
+        var items = data.GetProperty("items");
+        Assert.Equal("129", items[items.GetArrayLength() - 1].GetProperty("messages")[0].GetString());
     }
 
     [Theory]
@@ -157,6 +172,8 @@ public sealed class HomeAssistantLogsTests
     [Theory]
     [InlineData("level", "error")]
     [InlineData("level", ".*")]
+    [InlineData("level", "INFO")]
+    [InlineData("level", "DEBUG")]
     [InlineData("integration", "../config")]
     [InlineData("integration", "demo\n")]
     public async Task FiltersAreValidatedDataNotRegexOrPaths(string name, string value)
@@ -168,41 +185,34 @@ public sealed class HomeAssistantLogsTests
         Assert.Equal(0, fixture.Handler.Calls);
     }
 
-    [Theory]
-    [InlineData("")]
-    [InlineData("ismeretlen formátum\nfolytatás")]
-    [InlineData("2026-11-18 20:00:00.000+01:00 NOTICE (MainThread) [homeassistant.components.demo] ismeretlen szint")]
-    public async Task EmptyAndUnknownFormatsNeverInventMetadata(string body)
+    [Fact]
+    public async Task EmptyStructuredLogHasNoInventedMetadata()
     {
-        await using var fixture = new Fixture(body);
+        await using var fixture = new Fixture("");
         using var call = await fixture.Call(new { });
         var data = call.RootElement.GetProperty("result").GetProperty("structuredContent");
         Assert.False(data.GetProperty("truncated").GetBoolean());
         var items = data.GetProperty("items");
-        if (body.Length == 0) Assert.Equal(0, items.GetArrayLength());
-        else
-        {
-            Assert.Equal(1, items.GetArrayLength());
-            Assert.Equal(JsonValueKind.Null, items[0].GetProperty("timestamp").ValueKind);
-            Assert.Equal(JsonValueKind.Null, items[0].GetProperty("level").ValueKind);
-            Assert.Equal(JsonValueKind.Null, items[0].GetProperty("integration").ValueKind);
-            Assert.Equal(body, items[0].GetProperty("text").GetString());
-        }
+        Assert.Equal(0, items.GetArrayLength());
+        Assert.Equal(0, data.GetProperty("withheld_count").GetInt32());
     }
 
     [Fact]
-    public async Task TraceAndIndentedHeaderStayInTheirEntryAndUnknownLoggerHasNoIntegration()
+    public async Task AggregatedMessagesTracebackAndTypedMetadataArePreserved()
     {
-        var trace = "Traceback (most recent call last):\n  File demo.py, line 1\n  " + Entry(7) + "ValueError: hibás\n";
-        await using var fixture = new Fixture("előzmény\n" + Entry(1) + trace + Entry(2, "kész", "INFO", "homeassistant.core"));
+        var trace = "Traceback (most recent call last):\n  File demo.py, line 1\nKeyError: keyboard";
+        await using var fixture = new Fixture(Entry(1, exception: trace, messages: ["első", "második"], count: 7) +
+            Entry(2, "kész", "WARNING", "homeassistant.core"));
         using var call = await fixture.Call(new { });
         var items = call.RootElement.GetProperty("result").GetProperty("structuredContent").GetProperty("items");
-        Assert.Equal(3, items.GetArrayLength());
-        Assert.Equal(JsonValueKind.Null, items[0].GetProperty("level").ValueKind);
-        Assert.Contains("ValueError: hibás", items[1].GetProperty("text").GetString());
-        Assert.Contains("7: rendben", items[1].GetProperty("text").GetString());
-        Assert.Equal("INFO", items[2].GetProperty("level").GetString());
-        Assert.Equal(JsonValueKind.Null, items[2].GetProperty("integration").ValueKind);
+        Assert.Equal(2, items.GetArrayLength());
+        Assert.Equal(trace, items[0].GetProperty("exception").GetString());
+        Assert.Equal(2, items[0].GetProperty("messages").GetArrayLength());
+        Assert.Equal(7, items[0].GetProperty("count").GetInt64());
+        Assert.Equal(1001, items[0].GetProperty("first_occurred").GetDouble());
+        Assert.Equal(2001, items[0].GetProperty("timestamp").GetDouble());
+        Assert.Equal("WARNING", items[1].GetProperty("level").GetString());
+        Assert.Equal(JsonValueKind.Null, items[1].GetProperty("integration").ValueKind);
     }
 
     [Theory]
@@ -227,15 +237,15 @@ public sealed class HomeAssistantLogsTests
             result.ToString().Contains(fixture.Secrets.Token[^16..], StringComparison.Ordinal) ||
             result.ToString().Contains(canary, StringComparison.Ordinal), "Titok vagy titoktöredék az MCP-válaszban.");
         var data = result.GetProperty("structuredContent");
-        Assert.Equal(variant != "known", data.GetProperty("redacted").GetBoolean());
+        Assert.True(data.GetProperty("redacted").GetBoolean());
         Assert.True(data.GetProperty("truncated").GetBoolean());
         if (variant != "known") Assert.Equal(0, data.GetProperty("returned_count").GetInt32());
         await fixture.AssertNoRawData(canary);
     }
 
     [Theory]
-    [InlineData("http")]
-    [InlineData("redirect")]
+    [InlineData("connect")]
+    [InlineData("close")]
     [InlineData("provider")]
     [InlineData("timeout")]
     [InlineData("oversized")]
@@ -248,11 +258,9 @@ public sealed class HomeAssistantLogsTests
         if (failure == "provider") fixture.Secrets.Read = _ => throw new InvalidOperationException(canary);
         if (failure == "timeout") fixture.Secrets.Read = async ct => { await Task.Delay(Timeout.Infinite, ct); return fixture.Secrets.Token; };
         if (failure == "oversized") fixture.Body = new string('x', 1024 * 1024 + 1);
-        if (failure is "http" or "redirect" or "utf8") fixture.Handler.Respond = (_, _) => Task.FromResult(new HttpResponseMessage(
-            failure == "http" ? HttpStatusCode.InternalServerError : failure == "redirect" ? HttpStatusCode.Found : HttpStatusCode.OK)
-        {
-            Content = failure == "utf8" ? new ByteArrayContent([0xFF, 0xFE]) : new StringContent(canary)
-        });
+        if (failure == "connect") fixture.Sockets.BeforeConnect = _ => throw new InvalidOperationException(canary);
+        if (failure == "close") fixture.Sockets.MessageType = System.Net.WebSockets.WebSocketMessageType.Close;
+        if (failure == "utf8") fixture.Sockets.Frame = _ => [0xFF, 0xFE];
         using var call = await fixture.Call(new { });
         var result = call.RootElement.GetProperty("result");
         Assert.True(result.GetProperty("isError").GetBoolean());
@@ -266,7 +274,7 @@ public sealed class HomeAssistantLogsTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task CallerCancellationReachesSecretOrHttpWithSafeException(bool inSecret)
+    public async Task CallerCancellationReachesSecretOrSocketConnectWithSafeException(bool inSecret)
     {
         await using var fixture = new Fixture("");
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -278,7 +286,7 @@ public sealed class HomeAssistantLogsTests
             return fixture.Secrets.Token;
         }
         if (inSecret) fixture.Secrets.Read = Block;
-        else fixture.Handler.Respond = async (_, ct) => { await Block(ct); return new HttpResponseMessage(HttpStatusCode.OK); };
+        else fixture.Sockets.BeforeConnect = async ct => { await Block(ct); };
         using var cancellation = new CancellationTokenSource();
         var pending = new HomeAssistantLogTools(fixture.Factory.Services).GetLogs(cancellation.Token);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -286,7 +294,7 @@ public sealed class HomeAssistantLogsTests
         var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
         Assert.Equal(cancellation.Token, error.CancellationToken);
         Assert.False(error.ToString().Contains(fixture.Secrets.Token, StringComparison.Ordinal), "Titok a megszakításban.");
-        Assert.Equal(inSecret ? 0 : 1, fixture.Handler.Calls);
+        Assert.Equal(inSecret ? 0 : 1, fixture.Sockets.Calls);
     }
 
     [Fact]
@@ -305,27 +313,34 @@ public sealed class HomeAssistantLogsTests
     [Fact]
     public async Task IntegrationFilterExcludesOtherAndUnknownEntriesBeforeLimit()
     {
-        await using var fixture = new Fixture("ismeretlen\n" + Entry(1) + Entry(2, logger: "custom_components.other") +
+        await using var fixture = new Fixture(Entry(1) + Entry(2, logger: "custom_components.other") +
             Entry(3, logger: "custom_components.demo.worker") + Entry(4, logger: "homeassistant.core"));
         using var call = await fixture.Call(new { integration = "demo", limit = 1 });
         var data = call.RootElement.GetProperty("result").GetProperty("structuredContent");
         Assert.Equal(1, data.GetProperty("returned_count").GetInt32());
         Assert.Equal("demo", data.GetProperty("items")[0].GetProperty("integration").GetString());
-        Assert.Contains("3: rendben", data.GetProperty("items")[0].GetProperty("text").GetString());
+        Assert.Contains("3: rendben", data.GetProperty("items")[0].GetProperty("messages")[0].GetString());
         Assert.True(data.GetProperty("truncated").GetBoolean());
     }
 
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task ResponseBodyReadHasDeadlineAndCallerCancellation(bool cancelByCaller)
+    public async Task ResultReceiveHasDeadlineAndCallerCancellation(bool cancelByCaller)
     {
         await using var fixture = new Fixture("", timeout: cancelByCaller ? TimeSpan.FromSeconds(5) : TimeSpan.FromMilliseconds(150));
-        var stream = new WaitingStream();
-        fixture.Handler.Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(stream) });
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var observedCancellation = false;
+        fixture.Sockets.BeforeReceive = async (frame, ct) =>
+        {
+            if (frame < 2) return;
+            entered.TrySetResult();
+            try { await Task.Delay(Timeout.Infinite, ct); }
+            catch (OperationCanceledException) { observedCancellation = true; throw; }
+        };
         using var cancellation = new CancellationTokenSource();
         var pending = new HomeAssistantLogTools(fixture.Factory.Services).GetLogs(cancellation.Token);
-        await stream.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
         if (cancelByCaller)
         {
             cancellation.Cancel();
@@ -337,31 +352,10 @@ public sealed class HomeAssistantLogsTests
             var error = await Assert.ThrowsAsync<GateToolException>(() => pending);
             Assert.Equal("A Home Assistant naplólekérés sikertelen.", error.Message);
         }
-        Assert.True(stream.ObservedCancellation);
+        Assert.True(observedCancellation);
+        Assert.True(fixture.Sockets.Last!.Disposed && fixture.Sockets.Last.Aborted);
     }
 
-    private sealed class WaitingStream : Stream
-    {
-        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public bool ObservedCancellation { get; private set; }
-        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
-        {
-            Entered.TrySetResult();
-            try { await Task.Delay(Timeout.Infinite, cancellationToken); }
-            catch (OperationCanceledException) { ObservedCancellation = true; throw; }
-            return 0;
-        }
-        public override bool CanRead => true;
-        public override bool CanSeek => false;
-        public override bool CanWrite => false;
-        public override long Length => throw new NotSupportedException();
-        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
-        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-        public override void Flush() => throw new NotSupportedException();
-        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-        public override void SetLength(long value) => throw new NotSupportedException();
-        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-    }
 
     internal sealed class Fixture : IAsyncDisposable
     {
@@ -370,19 +364,16 @@ public sealed class HomeAssistantLogsTests
         public McpTestApplication Factory { get; }
         public HttpClient Client { get; }
         public Audit.McpAuditTests.RecordingLogger Logs { get; } = new();
-        public bool FixedRequest { get; private set; }
+        public bool FixedRequest => Sockets.FixedRequest && Sockets.Target == new Uri("wss://ha.example/api/websocket");
+        public HomeAssistantLogTestSocketFactory Sockets { get; }
         public string Body { get; set; }
 
         public Fixture(string body, TimeSpan? timeout = null, bool configured = true)
         {
             Body = body;
             Handler = new HomeAssistantReadToolsTests.Handler(body);
-            Handler.Respond = (request, _) =>
-            {
-                FixedRequest = request.Method == HttpMethod.Get && request.RequestUri == new Uri("https://ha.example/api/error_log") &&
-                    request.Headers.Authorization?.Scheme == "Bearer" && request.Headers.Authorization.Parameter == Secrets.Token;
-                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(Body, Encoding.UTF8, "text/plain") });
-            };
+            Handler.Respond = (_, _) => throw new InvalidOperationException("A naplóolvasás nem használhat HTTP-fallbacket.");
+            Sockets = new HomeAssistantLogTestSocketFactory(() => "[" + string.Join(',', Body.Split('\n', StringSplitOptions.RemoveEmptyEntries).Reverse()) + "]", () => Secrets.Token);
             var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
             Factory = new McpTestApplication(token, services =>
             {
@@ -391,7 +382,7 @@ public sealed class HomeAssistantLogsTests
                 {
                     BaseUrl = "https://ha.example/", TokenSecretId = Guid.NewGuid().ToString(),
                     Timeout = timeout ?? TimeSpan.FromSeconds(5)
-                }), Secrets, Handler));
+                }), Secrets, Handler, Sockets));
             });
             Client = HomeAssistantToolProtocolTests.CreateClient(Factory, token);
         }
