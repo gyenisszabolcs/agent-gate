@@ -13,6 +13,7 @@ public sealed class HomeAssistantClient : IDisposable
     private readonly ISecretProvider secrets;
     private readonly Guid secretId;
     private readonly HashSet<string> domains;
+    private readonly LogRead.IHomeAssistantLogSocketFactory logSockets;
     private const int MaximumResponseBytes = 1024 * 1024;
     // Kizárólag szerveroldali adat: hívói paraméter soha nem kerülhet a sablonba.
     private const string AreasTemplate = """
@@ -28,10 +29,15 @@ public sealed class HomeAssistantClient : IDisposable
 
     // A megadott handler megbízható infrastruktúra; tesztben kizárólag hamis HTTP-kezelő.
     public HomeAssistantClient(IOptions<HomeAssistantOptions> options, ISecretProvider secrets, HttpMessageHandler handler)
+        : this(options, secrets, handler, new LogRead.HomeAssistantLogSocketFactory()) { }
+
+    public HomeAssistantClient(IOptions<HomeAssistantOptions> options, ISecretProvider secrets, HttpMessageHandler handler,
+        LogRead.IHomeAssistantLogSocketFactory logSockets)
     {
         if (new HomeAssistantOptionsValidator().Validate(null, options.Value).Failed)
             throw new OptionsValidationException(Options.DefaultName, typeof(HomeAssistantOptions), [HomeAssistantOptionsValidator.SafeMessage]);
         this.secrets = secrets;
+        this.logSockets = logSockets;
         domains = new HashSet<string>(options.Value.DomainAllowlist ?? [], StringComparer.Ordinal);
         secretId = Guid.Parse(options.Value.TokenSecretId!);
         timeout = options.Value.Timeout;
@@ -136,10 +142,12 @@ public sealed class HomeAssistantClient : IDisposable
 
     private Task<JsonElement> ReadAsync(string path, CancellationToken cancellationToken) => SendAsync(path, cancellationToken);
 
-    public async Task<LogRead.HomeAssistantLogSnapshot> GetLogsAsync(CancellationToken cancellationToken = default) =>
-        (await SendAsync("/api/error_log", cancellationToken, readLog: true)).Deserialize<LogRead.HomeAssistantLogSnapshot>()!;
+    public Task<LogRead.HomeAssistantLogSnapshot> GetLogsAsync(CancellationToken cancellationToken = default,
+        string? level = null, string? integration = null) =>
+        LogRead.HomeAssistantSystemLogReader.ReadAsync(logSockets, http.BaseAddress!, secrets, secretId,
+            timeout, level, integration, cancellationToken);
 
-    private async Task<JsonElement> SendAsync(string path, CancellationToken cancellationToken, string? body = null, Func<CancellationToken, Task>? beforeSend = null, bool readLog = false)
+    private async Task<JsonElement> SendAsync(string path, CancellationToken cancellationToken, string? body = null, Func<CancellationToken, Task>? beforeSend = null)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(timeout);
@@ -194,14 +202,7 @@ public sealed class HomeAssistantClient : IDisposable
                 if (buffer.Length + read > MaximumResponseBytes) throw new InvalidOperationException();
                 await buffer.WriteAsync(chunk.AsMemory(0, read), ct);
             }
-            if (readLog)
-            {
-                // Egyetlen rögzített szöveges végpont, ugyanazon transport- és 1 MiB védelemmel.
-                var text = new System.Text.UTF8Encoding(false, true).GetString(buffer.ToArray());
-                var snapshot = LogRead.HomeAssistantLogSanitizer.Sanitize(text, token);
-                ct.ThrowIfCancellationRequested();
-                return JsonSerializer.SerializeToElement(snapshot);
-            }
+
             using var json = JsonDocument.Parse(buffer.ToArray(), new JsonDocumentOptions { MaxDepth = 32 });
             ct.ThrowIfCancellationRequested();
             return HomeAssistantJsonSanitizer.Sanitize(json.RootElement, token);
@@ -230,7 +231,11 @@ public sealed class HomeAssistantClient : IDisposable
         }
     }
 
-    public void Dispose() => http.Dispose();
+    public void Dispose()
+    {
+        http.Dispose();
+        (logSockets as IDisposable)?.Dispose();
+    }
 }
 
 internal sealed class HomeAssistantServiceRejectedException : Exception;
