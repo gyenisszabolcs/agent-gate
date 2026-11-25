@@ -1,4 +1,5 @@
 using AgentGate.Integrations.HomeAssistant.Control;
+using AgentGate.Integrations.HomeAssistant.Registry;
 using AgentGate.Audit;
 using Microsoft.Extensions.Options;
 using AgentGate.Policy;
@@ -40,6 +41,7 @@ builder.Services.AddSingleton<McpAuditFilter>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddHomeAssistantClient(builder.Configuration);
 builder.Services.AddHomeAssistantControl(builder.Configuration);
+builder.Services.AddHomeAssistantRegistry(builder.Configuration);
 builder.Services.AddHomeAssistantApproval(builder.Configuration);
 builder.Services.AddSingleton<IApprovalOperationHandler, ApprovalTestOperation>();
 builder.Services.AddSingleton<ApprovalGate>();
@@ -63,6 +65,7 @@ builder.Services.AddMcpServer()
     .WithTools<HomeAssistantTools>()
     .WithTools<HomeAssistantLogTools>()
     .WithTools<HomeAssistantControlTools>()
+    .WithTools<HomeAssistantRegistryTools>()
     .WithRequestFilters(filters => filters.AddCallToolFilter(next => (request, cancellationToken) =>
         request.Services!.GetRequiredService<McpAuditFilter>().InvokeAsync(request, next, cancellationToken)));
 builder.Services.Configure<McpAuthenticationOptions>(options =>

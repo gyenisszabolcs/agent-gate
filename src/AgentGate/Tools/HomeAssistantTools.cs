@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using AgentGate.Audit;
 using AgentGate.Integrations.HomeAssistant;
+using AgentGate.Integrations.HomeAssistant.Registry;
 using AgentGate.Policy;
 using ModelContextProtocol.Server;
 using ModelContextProtocol.Protocol;
@@ -48,11 +49,15 @@ public sealed class HomeAssistantTools(IServiceProvider services)
         var filtered = states.Where(HomeAssistantReadProjection.IsSafe).Where(state => domain is null || state.EntityId.Split('.')[0] == domain)
             .Where(state => area is null || areaEntities.Contains(state.EntityId))
             .OrderBy(state => state.EntityId, StringComparer.Ordinal).ToArray();
+        var labels = new Dictionary<string, string[]>(StringComparer.Ordinal);
+        if (services.GetService<RegistryPolicy>()?.IncludeEntityLabels == true)
+            foreach (var state in filtered.Take(100)) labels[state.EntityId] = await Read(() => client.GetEntityLabelsAsync(state.EntityId, cancellationToken));
         return Result(new
         {
             items = filtered.Take(100).Select(state =>
             {
                 var item = HomeAssistantReadProjection.State(state);
+                if (labels.TryGetValue(state.EntityId, out var assignedLabels)) item["labels"] = assignedLabels;
                 item["area_name"] = areas.FirstOrDefault(area => area.EntityIds.Contains(state.EntityId, StringComparer.Ordinal))?.AreaName;
                 return item;
             }),
@@ -102,6 +107,8 @@ public sealed class HomeAssistantTools(IServiceProvider services)
         var areas = (await Read(() => client.GetAreasAsync(cancellationToken))).Where(HomeAssistantReadProjection.IsSafe).ToArray();
         result["area_name"] = areas.FirstOrDefault(area => area.EntityIds.Contains(entity_id, StringComparer.Ordinal))?.AreaName;
         result["attributes"] = HomeAssistantReadProjection.Attributes(state);
+        if (services.GetService<RegistryPolicy>()?.IncludeEntityLabels == true)
+            result["labels"] = await Read(() => client.GetEntityLabelsAsync(entity_id, cancellationToken));
         return Result(result);
     }
 

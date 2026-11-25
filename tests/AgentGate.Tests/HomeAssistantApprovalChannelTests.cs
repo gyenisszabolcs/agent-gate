@@ -10,6 +10,7 @@ using System.Threading.Channels;
 using AgentGate.Approval;
 using AgentGate.Audit;
 using AgentGate.Approval.HomeAssistant;
+using AgentGate.Integrations.HomeAssistant.Registry;
 using AgentGate.Policy;
 using AgentGate.Secrets;
 using Microsoft.AspNetCore.Hosting;
@@ -1040,6 +1041,7 @@ public sealed partial class HomeAssistantApprovalChannelTests
             Operation.Result = "token=" + Secrets.Token;
         }
         public IAuditStore? AuditOverride { get; set; }
+        public HomeAssistantRegistryTests.Fixture? RegistryFixture { get; set; }
         public ApprovalPushFormatter? FormatterOverride { get; set; }
         public int GateSendTimeoutSeconds { get; set; } = 5;
         protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -1067,6 +1069,13 @@ public sealed partial class HomeAssistantApprovalChannelTests
                 services.PostConfigure<McpAuthenticationOptions>(options => options.Token = McpToken);
                 services.RemoveAll<IApprovalOperationHandler>();
                 services.AddSingleton<IApprovalOperationHandler>(Operation);
+                if (RegistryFixture is { } registry)
+                {
+                    services.AddSingleton(registry.Client);
+                    services.AddSingleton(registry.Policy);
+                    services.AddSingleton<IKillSwitchStateSource>(registry.KillSwitch);
+                    services.AddSingleton<IApprovalOperationHandler, HomeAssistantRegistryOperation>();
+                }
                 if (AuditOverride is not null) services.AddSingleton<IAuditStore>(AuditOverride);
                 if (FormatterOverride is not null) services.AddSingleton(FormatterOverride);
                 services.AddSingleton<ISecretProvider>(Secrets);

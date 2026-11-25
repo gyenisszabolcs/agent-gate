@@ -7,7 +7,7 @@ using AgentGate.Secrets;
 namespace AgentGate.Approval.HomeAssistant;
 
 /// <summary>Kizárólag megjelenítés: az audit engedélyezőlistás összefoglalóját olvassa, nem a kötött műveletet.</summary>
-public sealed class ApprovalPushFormatter(Func<TimeZoneInfo>? timeZone = null)
+public sealed partial class ApprovalPushFormatter(Func<TimeZoneInfo>? timeZone = null)
 {
     public string Request(ApprovalNotice request, string token)
     {
@@ -37,6 +37,7 @@ public sealed class ApprovalPushFormatter(Func<TimeZoneInfo>? timeZone = null)
 
     private static (string Action, string Details) Parameters(string summary, string token, string tool)
     {
+        if (tool == "ha_update_registry") return RegistryParameters(summary, token);
         const string omitted = "[kihagyva]";
         var action = tool == "gate_approval_test"
             ? "Jóváhagyási próba végrehajtása éles mellékhatás nélkül."

@@ -1,0 +1,12 @@
+{
+  // A meglévő HA-, audit-, Bitwarden- és HA-jóváhagyásicsatorna-beállítások mellé.
+  // Nem teljes telepítési konfiguráció; nem tartalmaz titkot vagy titokhivatkozást.
+  "HomeAssistantRegistry": {
+    // Alapérték false. Minden írás külön HA push-jóváhagyást igényel.
+    "Enabled": false,
+    // Alapérték false. Entitásonként további registry websocket-olvasás.
+    "IncludeEntityLabels": false,
+    // Az olvasási DomainAllowlist és a meglévő Control EntityDenylist mellett érvényes.
+    "EntityDenylist": ["sensor.denied"]
+  }
+}

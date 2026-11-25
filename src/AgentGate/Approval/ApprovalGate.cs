@@ -326,6 +326,22 @@ public sealed class ApprovalGate(
             .Where(pair => allowlist.Contains(pair.Key, StringComparer.Ordinal))
             .ToDictionary(pair => pair.Key, pair => SecretRedactor.RedactText(pair.Value))));
         var owner = auditOptions.Value.Caller;
+        if (operation.RequiresLosslessAudit)
+        {
+            // Ha egy előállapot nem őrizhető meg hiánytalanul és titokmentesen,
+            // sem push, sem későbbi írás nem engedélyezhető.
+            var safe = SecretRedactor.RedactParameters(operation.Parameters);
+            if (operation.Parameters.Any(pair => !allowlist.Contains(pair.Key, StringComparer.Ordinal) ||
+                !safe.TryGetValue(pair.Key, out var value) || value != pair.Value || SecretRedactor.RedactText(pair.Value) != pair.Value) ||
+                summary.Length > 32_768)
+                throw new InvalidOperationException("A teljes előállapot nem auditálható.");
+            using var scope = scopes.CreateScope();
+            var store = scope.ServiceProvider.GetRequiredService<IAuditStore>();
+            var preparedId = Guid.NewGuid();
+            await store.BeginAsync(new AuditCall(preparedId, clock.GetUtcNow(), SecretRedactor.RedactText(owner)!, tool, risk,
+                JsonSerializer.Serialize(new { requestId = id, phase = "prepared", operationHash = operation.ComputeHash(owner), parameters = operation.Parameters })), cancellationToken);
+            await store.CompleteAsync(preparedId, "Succeeded", 0, null, cancellationToken);
+        }
         var notice = new ApprovalNotice(id, SecretRedactor.RedactText(owner)!, tool, risk, summary,
             clock.GetUtcNow().AddMinutes(gateOptions.Value.LifetimeMinutes));
         var pending = new PendingOperation(operation, operation.ComputeHash(owner), owner, notice);

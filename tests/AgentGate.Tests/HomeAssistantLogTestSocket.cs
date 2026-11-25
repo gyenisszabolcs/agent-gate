@@ -14,6 +14,7 @@ internal sealed class HomeAssistantLogTestSocketFactory(Func<string> body, Func<
     public Func<CancellationToken, Task>? BeforeConnect { get; set; }
     public Func<int, CancellationToken, Task>? BeforeReceive { get; set; }
     public Func<int, byte[]>? Frame { get; set; }
+    public Func<JsonElement, string>? RequestBody { get; set; }
     public int FragmentSize { get; set; } = 8_192;
     public bool NeverEnd { get; set; }
     public WebSocketMessageType MessageType { get; set; } = WebSocketMessageType.Text;
@@ -61,7 +62,7 @@ internal sealed class HomeAssistantLogTestSocketFactory(Func<string> body, Func<
             {
                 0 => "{\"type\":\"auth_required\",\"ha_version\":\"mock\"}",
                 1 => "{\"type\":\"auth_ok\",\"ha_version\":\"mock\"}",
-                _ => "{\"id\":1,\"type\":\"result\",\"success\":true,\"result\":" + body() + "}"
+                _ => "{\"id\":1,\"type\":\"result\",\"success\":true,\"result\":" + (owner.RequestBody?.Invoke(Sent[1]) ?? body()) + "}"
             });
             var count = Math.Min(Math.Min(buffer.Count, owner.FragmentSize), current.Length - offset);
             current.AsSpan(offset, count).CopyTo(buffer.AsSpan());
