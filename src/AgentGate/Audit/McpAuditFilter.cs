@@ -46,23 +46,12 @@ public sealed class McpAuditFilter(IServiceProvider services, IOptions<AuditOpti
                 parameters["[kihagyva]"] = "[kihagyva]";
             }
         }
-        if (!rejected && (tool!.ProtocolTool.Name is "ha_control" or "ha_sensitive_control") && request.Params.Arguments is { } controlArguments)
-        {
-            // Csak e két eszköz teljesen validált, zárt sémájú skalárjai; nyers objektumot soha.
-            parameters.Remove("data");
-            try
-            {
-                var policy = services.GetRequiredService<AgentGate.Integrations.HomeAssistant.Control.ControlPolicy>();
-                var normalized = policy.Validate(controlArguments.ToDictionary(p => p.Key, p => p.Value), risk);
-                foreach (var field in normalized.Data.EnumerateObject())
-                    parameters["data." + field.Name] = field.Name == "message" ? SecretRedactor.RedactText(field.Value.GetString()) :
-                        field.Value.ValueKind == JsonValueKind.String ? field.Value.GetString() : field.Value.GetRawText();
-                if (normalized.Domain == "media_player" && normalized.Service == "speak" &&
-                    controlArguments.TryGetValue("data", out var ttsData) && ttsData.TryGetProperty("message", out var text))
-                    parameters["data.text_length"] = text.GetString()!.Length.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            }
-            catch (AgentGate.Tools.GateToolException) { parameters["[kihagyva]"] = "[kihagyva]"; }
-        }
+        var modulePolicies = rejected ? [] : services.GetServices<IToolCallPolicy>()
+            .Where(policy => policy.Handles(tool!.ProtocolTool.Name)).ToArray();
+        var rawArguments = request.Params.Arguments?.ToDictionary(pair => pair.Key, pair => pair.Value);
+        if (rawArguments is not null)
+            foreach (var policy in modulePolicies)
+                policy.EnrichAuditParameters(rawArguments, risk, parameters);
         var call = new AuditCall(Guid.NewGuid(), DateTimeOffset.UtcNow, SecretRedactor.RedactText(options.Value.Caller)!,
             tool?.ProtocolTool.Name ?? "[ismeretlen-eszköz]", risk, JsonSerializer.Serialize(SecretRedactor.RedactParameters(parameters)));
         IAuditStore store;
@@ -95,28 +84,27 @@ public sealed class McpAuditFilter(IServiceProvider services, IOptions<AuditOpti
                 {
                     result = Error("A vészleállító policy letiltotta az eszköz végrehajtását.");
                 }
-                else if ((tool!.ProtocolTool.Name is "ha_control" or "ha_sensitive_control") &&
-                    request.Params.Arguments?.Keys.Any(name => name is not ("domain" or "service" or "entity_id" or "data")) == true)
-                {
-                    rejected = true;
-                    result = Error("A Home Assistant vezérlési kérés nem engedélyezett.");
-                }
-                else if (risk is RiskLevel.SensitiveControl or RiskLevel.Configuration or RiskLevel.System)
-                {
-                    var id = await services.GetRequiredService<AgentGate.Approval.ApprovalGate>().RequestAsync(
-                        call.CallId, tool!.ProtocolTool.Name, risk, allowed, request.Params.Arguments?.ToDictionary(pair => pair.Key, pair => pair.Value)
-                            ?? new Dictionary<string, JsonElement>(), cancellationToken);
-                    pendingRequestId = id;
-                    rejected = id is null;
-                    result = id is { } requestId
-                        ? new CallToolResult { Content = [new TextContentBlock { Text = $"jóváhagyásra vár: {requestId}" }] }
-                        : Error("A jóváhagyási kérés nem küldhető; a művelet nem indult el.");
-                    if (!rejected)
-                        state = "Pending";
-                }
                 else
                 {
-                    result = await next(request, cancellationToken);
+                    foreach (var policy in modulePolicies)
+                        policy.ValidateArguments(rawArguments ?? new Dictionary<string, JsonElement>());
+                    if (risk is RiskLevel.SensitiveControl or RiskLevel.Configuration or RiskLevel.System)
+                    {
+                        var id = await services.GetRequiredService<AgentGate.Approval.ApprovalGate>().RequestAsync(
+                            call.CallId, tool!.ProtocolTool.Name, risk, allowed,
+                            rawArguments ?? new Dictionary<string, JsonElement>(), cancellationToken);
+                        pendingRequestId = id;
+                        rejected = id is null;
+                        result = id is { } requestId
+                            ? new CallToolResult { Content = [new TextContentBlock { Text = $"jóváhagyásra vár: {requestId}" }] }
+                            : Error("A jóváhagyási kérés nem küldhető; a művelet nem indult el.");
+                        if (!rejected)
+                            state = "Pending";
+                    }
+                    else
+                    {
+                        result = await next(request, cancellationToken);
+                    }
                 }
             }
             cancellationToken.ThrowIfCancellationRequested();
@@ -134,31 +122,18 @@ public sealed class McpAuditFilter(IServiceProvider services, IOptions<AuditOpti
             state = "Cancelled";
             result = Error("Az eszközhívás megszakadt.");
         }
-        catch (AgentGate.Integrations.HomeAssistant.Control.ControlRateLimitException)
-        {
-            state = "Failed";
-            result = Error(AgentGate.Integrations.HomeAssistant.Control.ControlRateLimitException.SafeMessage);
-        }
-        catch (AgentGate.Integrations.HomeAssistant.Control.TtsQuietHoursException)
-        {
-            state = "Failed";
-            result = Error(AgentGate.Integrations.HomeAssistant.Control.TtsQuietHoursException.SafeMessage);
-        }
-        catch (AgentGate.Integrations.HomeAssistant.Control.TtsExecutionException exception)
-        {
-            state = "Failed";
-            result = Error(exception.SafeMessage);
-        }
         catch (AgentGate.Tools.GateToolException exception)
         {
             state = "Failed";
             result = Error(SecretRedactor.RedactText(exception.Message)!);
         }
-        catch (Exception)
+        catch (Exception exception)
         {
             // A provider tetszőleges, jelöletlen titkot is dobhat: az eredeti kivételt nem továbbítjuk.
             state = "Failed";
-            result = Error("Az eszköz végrehajtása sikertelen.");
+            var safeMessage = services.GetServices<IOperationErrorPolicy>()
+                .Select(policy => policy.GetSafeMessage(exception, null)).FirstOrDefault(message => message is not null);
+            result = Error(safeMessage is null ? "Az eszköz végrehajtása sikertelen." : SecretRedactor.RedactText(safeMessage)!);
         }
         var duration = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
         // A kliens megszakítása nem törölheti a már tartós kezdőbejegyzés lezárási kísérletét.
