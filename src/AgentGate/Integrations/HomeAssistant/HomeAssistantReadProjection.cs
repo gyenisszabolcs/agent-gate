@@ -35,6 +35,8 @@ internal static class HomeAssistantReadProjection
 
     public static bool IsSafe(HomeAssistantArea area) => !LocationText(area.AreaId) && !LocationText(area.AreaName);
 
+    internal static bool IsSafeLabel(string id, string name) => !LocationText(id) && !LocationText(name);
+
     public static Dictionary<string, object> Config(JsonElement source)
     {
         var result = new Dictionary<string, object>();

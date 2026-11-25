@@ -12,12 +12,14 @@ public sealed class PreparedOperation
     public string Tool { get; }
     public RiskLevel Risk { get; }
     public FrozenDictionary<string, string?> Parameters { get; }
+    public bool RequiresLosslessAudit { get; }
 
-    public PreparedOperation(string tool, RiskLevel risk, IReadOnlyDictionary<string, string?> parameters)
+    public PreparedOperation(string tool, RiskLevel risk, IReadOnlyDictionary<string, string?> parameters, bool requiresLosslessAudit = false)
     {
         Tool = tool;
         Risk = risk;
         Parameters = parameters.ToFrozenDictionary(StringComparer.Ordinal);
+        RequiresLosslessAudit = requiresLosslessAudit;
     }
 
     public string ComputeHash(string owner = "")

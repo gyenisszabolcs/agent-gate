@@ -6,7 +6,7 @@ using Microsoft.Extensions.Options;
 
 namespace AgentGate.Integrations.HomeAssistant;
 
-public sealed class HomeAssistantClient : IDisposable
+public sealed partial class HomeAssistantClient : IDisposable
 {
     private readonly HttpClient http;
     private readonly TimeSpan timeout;

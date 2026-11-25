@@ -2,6 +2,8 @@
 
 A külön `ha_get_logs` Read eszköz használatát, 32 000 bájtos teljes kimeneti korlátját és konzervatív titokvédelmét a [naplóolvasás leírása](LogRead/README.md) tartalmazza. Nem az alábbi JSON-projekciót használja.
 
+A külön [nyilvántartási modul](Registry/README.md) tartalmazza a `ha_get_labels` címkeolvasást, az opcionális címkekiegészítést az állapotolvasásokban és a jóváhagyásköteles `ha_update_registry` entitásmódosítást. Új beállításai a `HomeAssistantRegistry` szakaszban vannak; a dokumentált nem-atomi és eszközcél-korlátokra külön figyelni kell. Az alábbi négy alapolvasás szerződését a címkekiegészítés csak explicit bekapcsoláskor bővíti.
+
 A főprogramba feltételesen bekötött kliens négy JSON-alapú olvasási művelete:
 
 - `GetConfigAsync(ct)` → `GET /api/config`, szűrt `HomeAssistantConfig.Data` JSON objektum.
