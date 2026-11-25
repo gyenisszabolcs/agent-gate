@@ -180,14 +180,11 @@ public sealed class ApprovalGate(
                     lock (pending.Sync)
                     {
                         pending.State = ApprovalState.Failed;
-                        pending.Result = !completionAttempted && exception is AgentGate.Integrations.HomeAssistant.Control.ControlRateLimitException
-                            ? AgentGate.Integrations.HomeAssistant.Control.ControlRateLimitException.SafeMessage
-                            : !completionAttempted && pending.Operation.Tool == "ha_sensitive_control" &&
-                                pending.Operation.Parameters.GetValueOrDefault("domain") == "media_player" &&
-                                pending.Operation.Parameters.GetValueOrDefault("service") == "speak" &&
-                                exception is AgentGate.Integrations.HomeAssistant.Control.TtsExecutionException ttsFailure
-                                ? ttsFailure.SafeMessage
-                            : "A jóváhagyott művelet vagy az audit lezárása sikertelen; ez nem visszagörgetés.";
+                        var safeMessage = completionAttempted ? null : scope.ServiceProvider.GetServices<IOperationErrorPolicy>()
+                            .Select(policy => policy.GetSafeMessage(exception, pending.Operation)).FirstOrDefault(message => message is not null);
+                        pending.Result = safeMessage is null
+                            ? "A jóváhagyott művelet vagy az audit lezárása sikertelen; ez nem visszagörgetés."
+                            : SecretRedactor.RedactText(safeMessage);
                     }
                     if (auditStarted && !completionAttempted)
                     {

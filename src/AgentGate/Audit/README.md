@@ -16,6 +16,16 @@ Más kivétel (a jelöletlen SDK `McpException` is), becsomagolt jelölő és te
 
 A jelölt üzenet sem automatikusan titokmentes: a heurisztikus szűrő tetszőleges jelöletlen credentialt nem ismer fel. A fejlesztő ne jelöljön providerből másolt nyers üzenetet biztonságosnak. Az audit elő-/utóírási hibája továbbra is felülírja az eszköz eredményét a korábbi zárt hibával; a lezárási hiba nem visszagörgetés.
 
+## Modulok bekötése
+
+A modul a saját szolgáltatásregisztrációjában köti be az `IToolCallPolicy`, `IOperationErrorPolicy` és jóváhagyásköteles műveletnél az `IApprovalOperationHandler` megvalósításait. Új modul miatt a közös audit- és jóváhagyási kaput nem kell módosítani. A `ToolRisk` és `ToolAuditParameters` metaadat továbbra is kötelező; a modulpolicy sem a kockázati besorolást, sem az auditot, vészleállítót vagy jóváhagyást nem helyettesíti.
+
+Az `IToolCallPolicy.Handles` csak a modul saját eszközeit jelölje ki. A `ValidateArguments` az SDK-binder előtt ellenőrizze a nyers argumentumok engedélyezőlistáját. Az `EnrichAuditParameters` kizárólag validált, naplózható mezőket adjon hozzá; az eredményre a közös paraméterszűrés változatlanul lefut.
+
+Az `IOperationErrorPolicy` explicit kivételtípus és szükség esetén a jóváhagyott `PreparedOperation` alapján adhat vissza saját, rögzített kategóriaüzenetet. Közvetlen hívásnál a művelet null; ismeretlen típusnál vagy nem illő műveletnél az eredmény is null. Providerüzenet, belső kivétel és SDK-hibapayload nem válik ettől megbízhatóvá. A kapu a kiadható üzenetet egyszer titokszűri, és ugyanazt használja a válaszhoz és az audithoz. Audit-lezárási hibát a jóváhagyási kapu nem ad át modulhibaként.
+
+A HA-modul `HomeAssistantControlCallPolicy` osztályában marad a két vezérlőeszköz zárt argumentumsémája, a normalizált adatok és a TTS-szöveghossz auditálása, valamint a korábban is kiadható kvóta-, csendesóra- és TTS-végrehajtási hibák szűk besorolása. Jóváhagyott TTS-hiba továbbra is csak a `ha_sensitive_control` / `media_player` / `speak` művelethez tartozhat.
+
 ## Auditkonfiguráció
 
 ```json

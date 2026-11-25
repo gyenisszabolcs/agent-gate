@@ -256,6 +256,8 @@ public static class HomeAssistantControlRegistration
         services.TryAddSingleton<ControlRateLimiter>();
         services.TryAddSingleton<TtsRateLimiter>();
         services.TryAddEnumerable(ServiceDescriptor.Singleton<AgentGate.Approval.IApprovalOperationHandler, HomeAssistantControlOperation>());
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IToolCallPolicy, HomeAssistantControlCallPolicy>());
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IOperationErrorPolicy, HomeAssistantControlCallPolicy>());
         if (configuration.GetChildren().Any(c => c.Key.Equals("HomeAssistantControl", StringComparison.OrdinalIgnoreCase)))
             services.AddOptions<StartupOptions>().Configure<ControlPolicy, IServiceProvider>((_, policy, provider) =>
             {
