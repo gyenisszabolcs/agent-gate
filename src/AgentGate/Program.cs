@@ -66,8 +66,17 @@ builder.Services.AddMcpServer()
     .WithTools<HomeAssistantLogTools>()
     .WithTools<HomeAssistantControlTools>()
     .WithTools<HomeAssistantRegistryTools>()
-    .WithRequestFilters(filters => filters.AddCallToolFilter(next => (request, cancellationToken) =>
-        request.Services!.GetRequiredService<McpAuditFilter>().InvokeAsync(request, next, cancellationToken)));
+    .WithRequestFilters(filters =>
+    {
+        filters.AddListToolsFilter(next => async (request, cancellationToken) =>
+        {
+            var result = await next(request, cancellationToken);
+            result.Tools = result.Tools.Select(McpInputSchemas.Describe).ToList();
+            return result;
+        });
+        filters.AddCallToolFilter(next => (request, cancellationToken) =>
+            request.Services!.GetRequiredService<McpAuditFilter>().InvokeAsync(request, next, cancellationToken));
+    });
 builder.Services.Configure<McpAuthenticationOptions>(options =>
     options.Token = Environment.GetEnvironmentVariable("GATE_MCP_TOKEN"));
 var app = builder.Build();
