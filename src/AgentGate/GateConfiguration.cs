@@ -11,7 +11,7 @@ internal static class GateConfiguration
     internal const string FilePath = "/etc/agentgate/agentgate.json";
     private static readonly HashSet<string> AllowedSections = new(StringComparer.OrdinalIgnoreCase)
     {
-        "HomeAssistant", "HomeAssistantApproval", "HomeAssistantControl", "Audit", "Approval", "Secrets", "KillSwitch"
+        "HomeAssistant", "HomeAssistantApproval", "HomeAssistantControl", "HomeAssistantRegistry", "Audit", "Approval", "Secrets", "KillSwitch"
     };
 
     private static readonly HashSet<string> SecretKeys = new(StringComparer.OrdinalIgnoreCase)

@@ -11,10 +11,12 @@ internal static class McpInputSchemas
     private static readonly JsonElement Patch = JsonSerializer.SerializeToElement(JsonNode.Parse("""
         {
           "type": "object",
-          "description": "Csak a megadott mezők változnak; az explicit null visszaállítás. A gate további policy- és előállapot-ellenőrzést végez.",
+          "description": "Csak a megadott mezők változnak. Eszköz (device_id): kizárólag area_id, name_by_user, labels (teljes címkelista). Entitás (entity_id): area_id, labels_add, labels_remove, name, icon, hidden_by, disabled_by. Az explicit null visszaállítás; a gate a céltípushoz nem tartozó mezőt elutasítja, és policy-/előállapot-ellenőrzést végez.",
           "minProperties": 1,
           "properties": {
             "area_id": { "type": ["string", "null"], "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9_-]+$" },
+            "name_by_user": { "type": ["string", "null"], "minLength": 1, "maxLength": 80 },
+            "labels": { "type": "array", "maxItems": 16, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9_-]+$" } },
             "labels_add": { "type": "array", "maxItems": 16, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9_-]+$" } },
             "labels_remove": { "type": "array", "maxItems": 16, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9_-]+$" } },
             "name": { "type": ["string", "null"], "minLength": 1, "maxLength": 80 },

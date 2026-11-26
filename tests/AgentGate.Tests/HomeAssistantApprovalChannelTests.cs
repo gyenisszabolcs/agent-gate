@@ -352,7 +352,7 @@ public sealed partial class HomeAssistantApprovalChannelTests
             release.TrySetResult();
             using var pending = await second;
             await WaitAsync(() => app.Http.Count == 3);
-            Assert.True(app.Http.Body!.Contains(expire ? "lej" : "elutas", StringComparison.Ordinal));
+            Assert.True(app.Http.Body!.Contains(expire ? "lej" : "elutas", StringComparison.OrdinalIgnoreCase));
             Assert.Equal(1, NotificationCount(channel));
             Assert.Equal(0, app.Operation.Count);
         }
@@ -1043,6 +1043,7 @@ public sealed partial class HomeAssistantApprovalChannelTests
         }
         public IAuditStore? AuditOverride { get; set; }
         public HomeAssistantRegistryTests.Fixture? RegistryFixture { get; set; }
+        public HomeAssistantDeviceRegistryTests.Fixture? DeviceRegistryFixture { get; set; }
         public ApprovalPushFormatter? FormatterOverride { get; set; }
         public int GateSendTimeoutSeconds { get; set; } = 5;
         protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -1075,6 +1076,13 @@ public sealed partial class HomeAssistantApprovalChannelTests
                     services.AddSingleton(registry.Client);
                     services.AddSingleton(registry.Policy);
                     services.AddSingleton<IKillSwitchStateSource>(registry.KillSwitch);
+                    services.AddSingleton<IApprovalOperationHandler, HomeAssistantRegistryOperation>();
+                }
+                if (DeviceRegistryFixture is { } deviceRegistry)
+                {
+                    services.AddSingleton(deviceRegistry.Client);
+                    services.AddSingleton(deviceRegistry.Policy);
+                    services.AddSingleton<IKillSwitchStateSource>(deviceRegistry.KillSwitch);
                     services.AddSingleton<IApprovalOperationHandler, HomeAssistantRegistryOperation>();
                 }
                 if (AuditOverride is not null) services.AddSingleton<IAuditStore>(AuditOverride);

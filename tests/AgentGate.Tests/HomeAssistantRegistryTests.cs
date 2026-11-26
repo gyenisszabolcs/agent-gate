@@ -85,15 +85,20 @@ public sealed class HomeAssistantRegistryTests
         Assert.Equal(1, f.Writes);
     }
 
-    [Fact]
-    public async Task DeviceTargetIsDeniedWithoutClaimingListCompleteness()
+    [Theory]
+    [InlineData("{\"name_by_user\":\"Új\"}")]
+    [InlineData("{\"area_id\":\"room\"}")]
+    [InlineData("{\"labels\":[\"new\"]}")]
+    [InlineData("{\"name\":\"Új\"}")]
+    public async Task AmbiguousEntityAndDeviceTargetsAreRejectedBeforeIo(string patch)
     {
         using var f = new Fixture();
-        var args = Arguments("{\"name_by_user\":\"Új\"}");
-        args.Remove("entity_id");
+        var args = Arguments(patch);
+
         args["device_id"] = JsonSerializer.SerializeToElement("1234567890abcdef1234567890abcdef");
         await Assert.ThrowsAnyAsync<Exception>(async () => await f.Operation.PrepareAsync(args, default));
         Assert.Equal(0, f.Socket.Calls);
+        Assert.Equal(0, f.Writes);
     }
 
     internal static Dictionary<string, JsonElement> Arguments(string patch, string id = "sensor.room") => new()

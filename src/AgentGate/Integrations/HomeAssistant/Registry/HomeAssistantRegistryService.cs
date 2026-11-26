@@ -6,7 +6,7 @@ using AgentGate.Tools;
 
 namespace AgentGate.Integrations.HomeAssistant.Registry;
 
-public sealed class HomeAssistantRegistryService(HomeAssistantClient? configuredClient, RegistryPolicy policy, IKillSwitchStateSource killSwitch)
+public sealed partial class HomeAssistantRegistryService(HomeAssistantClient? configuredClient, RegistryPolicy policy, IKillSwitchStateSource killSwitch)
 {
     private HomeAssistantClient client => configuredClient ?? throw RegistryPolicy.Invalid();
     public Task<PreparedOperation> PrepareAsync(IReadOnlyDictionary<string, JsonElement> arguments, CancellationToken ct) => PrepareCoreAsync(arguments, ct, true);
@@ -14,6 +14,7 @@ public sealed class HomeAssistantRegistryService(HomeAssistantClient? configured
     private async Task<PreparedOperation> PrepareCoreAsync(IReadOnlyDictionary<string, JsonElement> arguments, CancellationToken ct, bool includePresentation)
     {
         ValidateArguments(arguments);
+        if (arguments.ContainsKey("device_id")) return await PrepareDeviceAsync(arguments, ct, includePresentation);
         var entityId = arguments["entity_id"].GetString()!;
         policy.RequireEntity(client, entityId);
         var patch = RegistryPolicy.Patch(arguments["patch"]);
@@ -80,6 +81,11 @@ public sealed class HomeAssistantRegistryService(HomeAssistantClient? configured
     public async Task ExecuteAsync(PreparedOperation operation, CancellationToken ct)
     {
         if (operation.Tool != HomeAssistantRegistryOperation.ToolName || operation.Risk != RiskLevel.Configuration) throw RegistryPolicy.Invalid();
+        if (operation.Parameters.ContainsKey("device_id"))
+        {
+            await ExecuteDeviceAsync(operation, ct);
+            return;
+        }
         var entityId = operation.Parameters["entity_id"]!;
         using var patch = JsonDocument.Parse(operation.Parameters["patch"]!);
         var arguments = new Dictionary<string, JsonElement> { ["entity_id"] = JsonSerializer.SerializeToElement(entityId), ["patch"] = patch.RootElement.Clone() };
@@ -103,11 +109,18 @@ public sealed class HomeAssistantRegistryService(HomeAssistantClient? configured
 
     internal static void ValidateArguments(IReadOnlyDictionary<string, JsonElement> arguments)
     {
-        // Egyetlen eszközcél sem bizonyítottan teljes a jelenlegi adapterrel; nincs látszatengedély.
-        if (arguments.Keys.Any(key => key is not ("entity_id" or "patch")) || arguments.Count != 2 ||
-            !arguments.TryGetValue("entity_id", out var entity) || entity.ValueKind != JsonValueKind.String ||
+        if (arguments.Keys.Any(key => key is not ("entity_id" or "device_id" or "patch")) || arguments.Count != 2 ||
             !arguments.TryGetValue("patch", out var patch)) throw RegistryPolicy.Invalid();
-        RegistryPolicy.Patch(patch);
+        if (arguments.TryGetValue("device_id", out var device))
+        {
+            _ = RegistryPolicy.Id(device);
+            _ = RegistryPolicy.DevicePatch(patch);
+        }
+        else
+        {
+            if (!arguments.TryGetValue("entity_id", out var entity) || entity.ValueKind != JsonValueKind.String) throw RegistryPolicy.Invalid();
+            _ = RegistryPolicy.Patch(patch);
+        }
     }
 
     private async Task<SortedDictionary<string, object?>> ReadSnapshotAsync(string entityId, JsonElement intent, CancellationToken ct)
