@@ -11,9 +11,13 @@ internal sealed class RegistryCallPolicy : IToolCallPolicy, IOperationErrorPolic
     public bool Handles(string tool) => tool == HomeAssistantRegistryOperation.ToolName;
     public void ValidateArguments(IReadOnlyDictionary<string, JsonElement> arguments) => HomeAssistantRegistryService.ValidateArguments(arguments);
     public void EnrichAuditParameters(IReadOnlyDictionary<string, JsonElement> arguments, RiskLevel risk, IDictionary<string, string?> parameters) { }
-    public string? GetSafeMessage(Exception exception, PreparedOperation? operation) =>
-        operation?.Tool == HomeAssistantRegistryOperation.ToolName && exception is GateToolException
-            ? "A nyilvántartási előállapot vagy jogosultság megváltozott; új kérés és jóváhagyás szükséges." : null;
+    public string? GetSafeMessage(Exception exception, PreparedOperation? operation) => exception switch
+    {
+        RegistryPrestateChangedException => RegistryPrestateChangedException.SafeMessage,
+        GateToolException when operation?.Tool == HomeAssistantRegistryOperation.ToolName =>
+            "A nyilvántartási művelet nem engedélyezett; új kérés és jóváhagyás szükséges.",
+        _ => null
+    };
 }
 
 public static class HomeAssistantRegistryRegistration

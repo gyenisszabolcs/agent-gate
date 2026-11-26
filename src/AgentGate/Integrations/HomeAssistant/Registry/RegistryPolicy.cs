@@ -40,10 +40,12 @@ public sealed class RegistryPolicy
     private static OptionsValidationException BadConfiguration() => new(Options.DefaultName, typeof(RegistryPolicy), ["A Home Assistant nyilvántartás konfigurációja érvénytelen."]);
     public void RequireEntity(HomeAssistantClient client, string entityId)
     {
-        if (!Enabled || denied.Contains(entityId)) throw Invalid();
-        client.RequireRegistryEntity(entityId);
+        if (!Enabled || denied.Contains(entityId)) throw Denied();
+        try { client.RequireRegistryEntity(entityId); }
+        catch (HomeAssistantException) { throw Denied(); }
     }
-    internal static GateToolException Invalid() => new("A nyilvántartási kérés nem engedélyezett vagy az előállapot megváltozott; új kérés és jóváhagyás szükséges.");
+    internal static GateToolException Denied() => new("A nyilvántartási entitás nem engedélyezett.");
+    internal static GateToolException Invalid() => new("A nyilvántartási mező vagy bemenet nem engedélyezett vagy érvénytelen.");
     internal static string? Text(JsonElement element, int maximum, bool nullable = true)
     {
         if (nullable && element.ValueKind == JsonValueKind.Null) return null;

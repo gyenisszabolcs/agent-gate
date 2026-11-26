@@ -28,7 +28,7 @@ public sealed partial class HomeAssistantApprovalChannelTests
     }
 
     [Theory]
-    [InlineData("{\"area_id\":\"room\"}", "terület módosítása", "Terület: Nincs → Szoba")]
+    [InlineData("{\"area_id\":\"room\"}", "terület módosítása", "Terület: Nincs → Szoba (saját)")]
     [InlineData("{\"labels_add\":[\"new\"]}", "címkék módosítása", "Címkék: Megmarad → Megmarad, Új")]
     [InlineData("{\"hidden_by\":\"user\"}", "elrejtés módosítása", "Elrejtés: Nem → Igen")]
     [InlineData("{\"name\":\"Új\",\"labels_add\":[\"new\"]}", "nyilvántartás módosítása", "Címkék: Megmarad → Megmarad, Új; Név: Régi → Új")]
@@ -190,7 +190,7 @@ public sealed partial class HomeAssistantApprovalChannelTests
 
     [Theory]
     [InlineData("{\"name\":null}", "name", "Régi", "Alapértelmezett")]
-    [InlineData("{\"area_id\":\"room\"}", "area_id", "Nincs", "Szoba")]
+    [InlineData("{\"area_id\":\"room\"}", "area_id", "Nincs", "Szoba (saját)")]
     [InlineData("{\"labels_remove\":[\"keep\"]}", "labels", "Megmarad", "Nincs")]
     [InlineData("{\"hidden_by\":\"user\"}", "hidden_by", "Nem", "Igen")]
     [InlineData("{\"disabled_by\":\"user\"}", "disabled_by", "Nem", "Igen")]

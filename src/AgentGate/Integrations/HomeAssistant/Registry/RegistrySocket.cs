@@ -74,6 +74,7 @@ internal static class RegistrySocket
             }
         }
         catch (Exception) when (cancellationToken.IsCancellationRequested) { throw new OperationCanceledException(cancellationToken); }
+        catch (RegistryPrestateChangedException) when (!ct.IsCancellationRequested) { throw new RegistryPrestateChangedException(); }
         catch (Exception) { throw new HomeAssistantException("A Home Assistant nyilvántartási művelet sikertelen."); }
     }
 

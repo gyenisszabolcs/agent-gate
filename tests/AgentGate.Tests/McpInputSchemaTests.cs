@@ -61,7 +61,21 @@ public sealed class McpInputSchemaTests
         Assert.True(invalid.Length == 0, string.Join("\n", invalid));
 
         var registry = Assert.Single(tools.EnumerateArray(), tool => tool.GetProperty("name").GetString() == "ha_update_registry");
+        var description = registry.GetProperty("description").GetString()!;
+        Assert.Contains("azonosítót, nem területnevet", description);
+        Assert.Contains("Öröklött before állapotot ne küldj", description);
+        Assert.Contains("a gate maga olvassa", description);
+        Assert.Contains("patch.area_id:null", description);
+        Assert.Contains("hiányzó mező változatlan", description);
+        Assert.Contains("device_id) továbbra is tiltott", description);
+        var exampleStart = description.IndexOf('{');
+        var exampleEnd = description.IndexOf("}}", exampleStart, StringComparison.Ordinal) + 2;
+        using var example = JsonDocument.Parse(description[exampleStart..exampleEnd]);
+        Assert.Equal("light.yeelight_nappali", example.RootElement.GetProperty("entity_id").GetString());
+        Assert.Equal("nappali", example.RootElement.GetProperty("patch").GetProperty("area_id").GetString());
+        Assert.Equal(2, example.RootElement.EnumerateObject().Count());
         var input = registry.GetProperty("inputSchema");
+        Assert.False(input.GetProperty("properties").TryGetProperty("before", out _));
         Assert.Contains(input.GetProperty("required").EnumerateArray(), item => item.GetString() == "patch");
         var patch = input.GetProperty("properties").GetProperty("patch");
         Assert.Equal("object", patch.GetProperty("type").GetString());
