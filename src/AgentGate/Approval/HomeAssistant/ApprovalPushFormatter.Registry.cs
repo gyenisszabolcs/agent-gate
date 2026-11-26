@@ -7,7 +7,7 @@ namespace AgentGate.Approval.HomeAssistant;
 
 public sealed partial class ApprovalPushFormatter
 {
-    private static (string Action, string Details) RegistryParameters(string summary, string token)
+    private static void ValidateRegistrySummary(string summary, ApprovalPresentation display, string token)
     {
         try
         {
@@ -24,6 +24,8 @@ public sealed partial class ApprovalPushFormatter
             RegistrySocket.ValidateUnique(before.RootElement);
             RegistrySocket.ValidateUnique(after.RootElement);
             RegistrySocket.ValidateUnique(changes.RootElement);
+            if (!changes.RootElement.EnumerateObject().Select(field => field.Name).ToHashSet(StringComparer.Ordinal).SetEquals(display.Changes.Keys))
+                throw InvalidSummary();
             var lines = new List<string> { $"Entitás: {entity}", "Változás (előtte → utána):" };
             foreach (var field in changes.RootElement.EnumerateObject().OrderBy(field => field.Name, StringComparer.Ordinal))
             {
@@ -37,7 +39,6 @@ public sealed partial class ApprovalPushFormatter
             lines.Add("Írás előtt újraellenőrzés; nem atomi védelem.");
             var details = string.Join('\n', lines);
             if (Encoding.UTF8.GetByteCount(details) > 2800) throw InvalidSummary();
-            return ("Home Assistant entitás nyilvántartási adatainak módosítása.", details);
 
             string Display(JsonElement value)
             {

@@ -474,6 +474,7 @@ public sealed class HomeAssistantTtsConfirmationTests
         await using var f = Fixture(clock);
         var canary = Guid.NewGuid().ToString("N");
         f.Attributes = JsonSerializer.SerializeToElement(new { volume_level = 0.4 });
+        var executing = false;
         f.Respond = (req, _) =>
         {
             var fail = stage switch
@@ -482,13 +483,14 @@ public sealed class HomeAssistantTtsConfirmationTests
                 "speech" => req.RequestUri!.AbsolutePath.EndsWith("/tts/speak", StringComparison.Ordinal),
                 _ => req.Method == HttpMethod.Get
             };
-            if (!fail) return Task.FromResult(f.Response(req));
+            if (!executing || !fail) return Task.FromResult(f.Response(req));
             if (transport) throw new HttpRequestException(canary, new Exception(canary));
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StringContent(canary) });
         };
         using var pending = await f.Call("ha_sensitive_control", "media_player", "speak", "{\"message\":\"Teszt\",\"volume_level\":0.4}");
         Assert.False(ControlFixture.Failed(pending));
         var notice = Assert.Single(f.Channel.Requests);
+        executing = true;
         var outcome = await f.Channel.Approve();
         var expected = category + Effects;
         Assert.Equal(ApprovalState.Failed, outcome.State);

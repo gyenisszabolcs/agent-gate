@@ -140,8 +140,8 @@ public sealed class HomeAssistantMediaPlayerTests
         Assert.Equal(0, f.Posts);
         Assert.DoesNotContain("canary", Assert.Single(f.Channel.Requests).Summary);
         var push = new AgentGate.Approval.HomeAssistant.ApprovalPushFormatter().Request(Assert.Single(f.Channel.Requests), f.Secrets.Token);
-        Assert.Contains(spoken, push);
-        Assert.Contains("tts.local", push);
+        Assert.DoesNotContain(spoken, push);
+        Assert.DoesNotContain("tts.local", push);
         Assert.DoesNotContain("canary", push);
         Assert.Equal(ApprovalState.Executed, (await f.Channel.Approve()).State);
         Assert.Equal("/api/services/media_player/volume_set", payloads[0].Path);
@@ -284,7 +284,7 @@ public sealed class HomeAssistantMediaPlayerTests
     }
 
     [Fact]
-    public async Task SensitiveRejectAndExecutionKillSwitchNeverReachHa()
+    public async Task SensitiveRejectAndExecutionKillSwitchOnlyReadDisplayNameNeverWriteHa()
     {
         await using var f = Fixture(new Clock());
         using var pending = await f.Call("ha_sensitive_control", "media_player", "speak", "{\"message\":\"hello\"}");
@@ -295,7 +295,7 @@ public sealed class HomeAssistantMediaPlayerTests
         using var pendingKill = await f.Call("ha_sensitive_control", "media_player", "speak", "{\"message\":\"hello\"}");
         await File.WriteAllTextAsync(f.App.KillSwitchPath, "{\"Enabled\":true}");
         Assert.Equal(ApprovalState.Failed, (await f.Channel.Approve()).State);
-        Assert.Empty(f.Calls);
+        Assert.Equal(new[] { "GET /api/states/media_player.room", "GET /api/states/media_player.room" }, f.Calls.ToArray());
     }
 
     [Fact]

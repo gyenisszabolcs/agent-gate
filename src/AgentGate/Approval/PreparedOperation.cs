@@ -13,13 +13,16 @@ public sealed class PreparedOperation
     public RiskLevel Risk { get; }
     public FrozenDictionary<string, string?> Parameters { get; }
     public bool RequiresLosslessAudit { get; }
+    public ApprovalPresentation? Presentation { get; }
 
-    public PreparedOperation(string tool, RiskLevel risk, IReadOnlyDictionary<string, string?> parameters, bool requiresLosslessAudit = false)
+    public PreparedOperation(string tool, RiskLevel risk, IReadOnlyDictionary<string, string?> parameters, bool requiresLosslessAudit = false,
+        ApprovalPresentation? presentation = null)
     {
         Tool = tool;
         Risk = risk;
         Parameters = parameters.ToFrozenDictionary(StringComparer.Ordinal);
         RequiresLosslessAudit = requiresLosslessAudit;
+        Presentation = presentation;
     }
 
     public string ComputeHash(string owner = "")

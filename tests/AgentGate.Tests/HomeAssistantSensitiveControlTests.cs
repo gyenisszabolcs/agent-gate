@@ -194,7 +194,8 @@ public sealed class HomeAssistantSensitiveControlTests
             Assert.Equal(reason == "rejected" ? ApprovalState.Rejected : ApprovalState.Failed, outcome.State);
         }
         Assert.Equal(0, f.Posts);
-        Assert.Equal(0, f.Secrets.Calls);
+        Assert.Equal(reason == "unavailable" ? 0 : 1, f.Secrets.Calls);
+        Assert.Equal(reason == "unavailable" ? Array.Empty<string>() : ["GET /api/states/lock.room"], f.Calls.ToArray());
     }
 
     [Fact]

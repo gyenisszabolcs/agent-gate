@@ -21,11 +21,27 @@ public sealed class HomeAssistantControlService(IServiceProvider services, Contr
 
     public async Task<ControlRequest> PrepareAsync(IReadOnlyDictionary<string, JsonElement> arguments, RiskLevel risk, CancellationToken cancellationToken)
     {
+        return (await PrepareCoreAsync(arguments, risk, false, cancellationToken)).Request;
+    }
+
+    internal Task<(ControlRequest Request, string? Name)> PrepareApprovalAsync(IReadOnlyDictionary<string, JsonElement> arguments, RiskLevel risk, CancellationToken cancellationToken) =>
+        PrepareCoreAsync(arguments, risk, true, cancellationToken);
+
+    private async Task<(ControlRequest Request, string? Name)> PrepareCoreAsync(IReadOnlyDictionary<string, JsonElement> arguments, RiskLevel risk, bool includeDisplay, CancellationToken cancellationToken)
+    {
         var request = Validate(arguments, risk);
-        await CheckFreshAsync(request, risk, cancellationToken);
+        var fresh = await CheckFreshAsync(request, risk, cancellationToken);
+        string? name = null;
+        if (includeDisplay)
+        {
+            // Ugyanaz az engedélyezett, célegyezést ellenőrző olvasás; a név nem jogosultság.
+            fresh ??= await Client.GetStateAsync(request.EntityId, cancellationToken);
+            RequireUniqueFields(fresh.Attributes);
+            if (fresh.Attributes.TryGetProperty("friendly_name", out var value) && value.ValueKind == JsonValueKind.String) name = value.GetString();
+        }
         Validate(arguments, risk);
         if (await services.GetRequiredService<IKillSwitchStateSource>().IsEnabledAsync(cancellationToken)) throw ControlPolicy.Denied();
-        return request;
+        return (request, name);
     }
 
     private static void RequireUniqueFields(JsonElement value)
@@ -34,7 +50,7 @@ public sealed class HomeAssistantControlService(IServiceProvider services, Contr
         if (value.ValueKind != JsonValueKind.Object || value.EnumerateObject().Any(p => !names.Add(p.Name))) throw ControlPolicy.Denied();
     }
 
-    private async Task CheckFreshAsync(ControlRequest request, RiskLevel risk, CancellationToken cancellationToken)
+    private async Task<HomeAssistantState?> CheckFreshAsync(ControlRequest request, RiskLevel risk, CancellationToken cancellationToken)
     {
         if (request.Domain == "climate" && request.Service == "set_temperature")
         {
@@ -67,9 +83,9 @@ public sealed class HomeAssistantControlService(IServiceProvider services, Contr
             var requested = request.Data.GetProperty("temperature");
             // A statikus 10–30 korlátot a policy már pontosan ellenőrizte; ez a másik metszetfeltétel.
             if (ControlNumber.Compare(requested, min) < 0 || ControlNumber.Compare(requested, max) > 0) throw ControlPolicy.Denied();
-            return;
+            return climate;
         }
-        if (request.Domain != "cover") return;
+        if (request.Domain != "cover") return null;
         var state = await Client.GetStateAsync(request.EntityId, cancellationToken);
         RequireUniqueFields(state.Attributes);
         if (!state.Attributes.TryGetProperty("device_class", out var value) || value.ValueKind != JsonValueKind.String) throw ControlPolicy.Denied();
@@ -78,6 +94,7 @@ public sealed class HomeAssistantControlService(IServiceProvider services, Contr
             ? new[] { "awning", "blind", "curtain", "damper", "shade", "shutter", "window" }
             : new[] { "garage", "gate", "door" };
         if (!allowed.Contains(deviceClass, StringComparer.Ordinal)) throw ControlPolicy.Denied();
+        return state;
     }
 
     public async Task<JsonElement> ExecuteAsync(IReadOnlyDictionary<string, JsonElement> arguments, RiskLevel risk, CancellationToken cancellationToken)

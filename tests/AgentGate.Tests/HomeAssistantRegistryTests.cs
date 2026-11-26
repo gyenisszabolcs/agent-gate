@@ -105,6 +105,9 @@ public sealed class HomeAssistantRegistryTests
     internal sealed class Fixture : IDisposable
     {
         public string Name { get; set; } = "Régi";
+        public string? Area { get; set; }
+        public string LabelsCatalog { get; set; } = "[{\"label_id\":\"keep\",\"name\":\"Megmarad\"},{\"label_id\":\"new\",\"name\":\"Új\"}]";
+        public string AreasCatalog { get; set; } = "[{\"area_id\":\"room\",\"name\":\"Szoba\"}]";
         public string? DisabledBy { get; set; }
         public int Writes { get; private set; }
         public JsonElement LastUpdate { get; private set; }
@@ -121,9 +124,9 @@ public sealed class HomeAssistantRegistryTests
             {
                 RequestBody = command => command.GetProperty("type").GetString() switch
                 {
-                    "config/entity_registry/get" => JsonSerializer.Serialize(new { entity_id = "sensor.room", device_id = (string?)null, area_id = (string?)null, labels = new[] { "keep" }, name = Name, icon = (string?)null, hidden_by = (string?)null, disabled_by = DisabledBy }),
-                    "config/label_registry/list" => "[{\"label_id\":\"keep\",\"name\":\"Megmarad\"},{\"label_id\":\"new\",\"name\":\"Új\"}]",
-                    "config/area_registry/list" => "[{\"area_id\":\"room\",\"name\":\"Szoba\"}]",
+                    "config/entity_registry/get" => JsonSerializer.Serialize(new { entity_id = "sensor.room", device_id = (string?)null, area_id = Area, labels = new[] { "keep" }, name = Name, icon = (string?)null, hidden_by = (string?)null, disabled_by = DisabledBy }),
+                    "config/label_registry/list" => LabelsCatalog,
+                    "config/area_registry/list" => AreasCatalog,
                     "config/entity_registry/update" => Updated(command),
                     _ => throw new InvalidOperationException("Váratlan websocket parancs.")
                 }

@@ -343,7 +343,7 @@ public sealed class ApprovalGate(
             await store.CompleteAsync(preparedId, "Succeeded", 0, null, cancellationToken);
         }
         var notice = new ApprovalNotice(id, SecretRedactor.RedactText(owner)!, tool, risk, summary,
-            clock.GetUtcNow().AddMinutes(gateOptions.Value.LifetimeMinutes));
+            clock.GetUtcNow().AddMinutes(gateOptions.Value.LifetimeMinutes), operation.Presentation);
         var pending = new PendingOperation(operation, operation.ComputeHash(owner), owner, notice);
         requests[id] = pending;
         var started = 0;

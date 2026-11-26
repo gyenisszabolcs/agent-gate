@@ -10,7 +10,7 @@ public sealed class HomeAssistantControlOperation(HomeAssistantControlService co
     public RiskLevel Risk => RiskLevel.SensitiveControl;
     public async ValueTask<PreparedOperation> PrepareAsync(IReadOnlyDictionary<string, JsonElement> arguments, CancellationToken cancellationToken)
     {
-        var request = await control.PrepareAsync(arguments, Risk, cancellationToken);
+        var (request, name) = await control.PrepareApprovalAsync(arguments, Risk, cancellationToken);
         var parameters = new Dictionary<string, string?>
         {
             ["domain"] = request.Domain,
@@ -27,7 +27,7 @@ public sealed class HomeAssistantControlOperation(HomeAssistantControlService co
                 parameters["tts_fallback_volume"] = policy.Media.FallbackVolume.GetRawText();
             }
         }
-        return new PreparedOperation(Tool, Risk, parameters);
+        return new PreparedOperation(Tool, Risk, parameters, presentation: new ApprovalPresentation(name));
     }
     public async Task<string> ExecuteAsync(PreparedOperation operation, CancellationToken cancellationToken)
     {

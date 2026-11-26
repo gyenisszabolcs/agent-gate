@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using AgentGate.Approval;
 using AgentGate.Policy;
@@ -7,7 +8,9 @@ namespace AgentGate.Integrations.HomeAssistant.Registry;
 public sealed class HomeAssistantRegistryService(HomeAssistantClient? configuredClient, RegistryPolicy policy, IKillSwitchStateSource killSwitch)
 {
     private HomeAssistantClient client => configuredClient ?? throw RegistryPolicy.Invalid();
-    public async Task<PreparedOperation> PrepareAsync(IReadOnlyDictionary<string, JsonElement> arguments, CancellationToken ct)
+    public Task<PreparedOperation> PrepareAsync(IReadOnlyDictionary<string, JsonElement> arguments, CancellationToken ct) => PrepareCoreAsync(arguments, ct, true);
+
+    private async Task<PreparedOperation> PrepareCoreAsync(IReadOnlyDictionary<string, JsonElement> arguments, CancellationToken ct, bool includePresentation)
     {
         ValidateArguments(arguments);
         var entityId = arguments["entity_id"].GetString()!;
@@ -33,17 +36,43 @@ public sealed class HomeAssistantRegistryService(HomeAssistantClient? configured
             changes["labels"] = labels;
         }
         if (changes.Count == 0 || JsonSerializer.Serialize(before) == JsonSerializer.Serialize(after)) throw RegistryPolicy.Invalid();
+        JsonElement? areas = null;
+        JsonElement? labelsCatalog = null;
         if (patch.TryGetValue("area_id", out var area) && area is string areaId)
-            RequireCatalog(await client.ReadRegistryAreasAsync(ct), "area_id", [areaId]);
+        {
+            areas = await client.ReadRegistryAreasAsync(ct);
+            RequireCatalog(areas.Value, "area_id", [areaId]);
+        }
         if (add.Length + remove.Length > 0 || changes.ContainsKey("labels"))
-            RequireCatalog(await client.ReadRegistryLabelsAsync(true, ct), "label_id", add.Concat(remove).Concat((string[])after["labels"]!));
+        {
+            labelsCatalog = await client.ReadRegistryLabelsAsync(true, ct);
+            RequireCatalog(labelsCatalog.Value, "label_id", add.Concat(remove).Concat((string[])after["labels"]!));
+        }
+        ApprovalPresentation? presentation = null;
+        if (includePresentation)
+        {
+            // Ugyanazok a szűk registry-olvasások, az előállapot feloldására is. Nincs általános végrehajtó.
+            if (changes.ContainsKey("area_id") && areas is null && before["area_id"] is not null)
+                areas = await client.ReadRegistryAreasAsync(ct);
+            var display = new Dictionary<string, ApprovalDisplayChange>(StringComparer.Ordinal);
+            foreach (var field in changes.Keys)
+            {
+                var oldValue = DisplayValue(field, before[field], areas, labelsCatalog);
+                var newValue = DisplayValue(field, after[field], areas, labelsCatalog);
+                if (CanonicalDisplay(oldValue) == CanonicalDisplay(newValue) && JsonSerializer.Serialize(before[field]) != JsonSerializer.Serialize(after[field]))
+                    throw ApprovalPresentation.CannotDisplay();
+                display.Add(field, new(oldValue, newValue));
+            }
+            presentation = new(before["name"] as string, display);
+            _ = presentation.RegistryLine();
+        }
         ct.ThrowIfCancellationRequested();
         return new PreparedOperation(HomeAssistantRegistryOperation.ToolName, RiskLevel.Configuration,
             new Dictionary<string, string?>
             {
                 ["entity_id"] = entityId, ["patch"] = intent.GetRawText(), ["before"] = JsonSerializer.Serialize(before),
                 ["after"] = JsonSerializer.Serialize(after), ["changes"] = JsonSerializer.Serialize(changes)
-            }, requiresLosslessAudit: true);
+            }, requiresLosslessAudit: true, presentation: presentation);
     }
 
     public async Task ExecuteAsync(PreparedOperation operation, CancellationToken ct)
@@ -52,7 +81,8 @@ public sealed class HomeAssistantRegistryService(HomeAssistantClient? configured
         var entityId = operation.Parameters["entity_id"]!;
         using var patch = JsonDocument.Parse(operation.Parameters["patch"]!);
         var arguments = new Dictionary<string, JsonElement> { ["entity_id"] = JsonSerializer.SerializeToElement(entityId), ["patch"] = patch.RootElement.Clone() };
-        var current = await PrepareAsync(arguments, ct);
+        // A megjelenő név nem célegyezés: a végrehajtás változatlanul a kötött paramétereket ellenőrzi.
+        var current = await PrepareCoreAsync(arguments, ct, false);
         if (current.ComputeHash("") != operation.ComputeHash("")) throw RegistryPolicy.Invalid();
         using var changes = JsonDocument.Parse(operation.Parameters["changes"]!);
         await client.UpdateRegistryEntityAsync(entityId, changes.RootElement, async token =>
@@ -98,6 +128,45 @@ public sealed class HomeAssistantRegistryService(HomeAssistantClient? configured
         if (owner is not (null or "user" or "integration" or "config_entry" or "device")) throw RegistryPolicy.Invalid();
         return owner;
     }
+    private static string DisplayValue(string field, object? value, JsonElement? areas, JsonElement? labels)
+    {
+        return field switch
+        {
+            "name" => value is null ? "Alapértelmezett" : DisplayName((string)value, "Alapértelmezett"),
+            "area_id" => value is null ? "Nincs" : CatalogName(areas, "area_id", (string)value),
+            "labels" => ((string[])value!).Length == 0 ? "Nincs" : string.Join(", ", ((string[])value!).Select(id => CatalogName(labels, "label_id", id)).Order(StringComparer.Ordinal)),
+            "hidden_by" or "disabled_by" => value switch { null => "Nem", "user" => "Igen", _ => throw ApprovalPresentation.CannotDisplay() },
+            _ => throw ApprovalPresentation.CannotDisplay()
+        };
+    }
+
+    private static string CatalogName(JsonElement? source, string key, string id)
+    {
+        if (source is null) throw ApprovalPresentation.CannotDisplay();
+        var items = RegistryPolicy.List(source.Value).ToArray();
+        var matches = items.Where(item => RegistryPolicy.RequiredId(item, key) == id).ToArray();
+        if (matches.Length != 1 || !matches[0].TryGetProperty("name", out var name) || name.ValueKind != JsonValueKind.String)
+            throw ApprovalPresentation.CannotDisplay();
+        var text = DisplayName(name.GetString(), "Nincs");
+        if (text == id || items.Count(item => item.TryGetProperty("name", out var other) && other.ValueKind == JsonValueKind.String && CanonicalDisplay(other.GetString()!) == text) != 1)
+            throw ApprovalPresentation.CannotDisplay();
+        return text;
+    }
+
+    private static string DisplayName(string? value, string sentinel)
+    {
+        var text = CanonicalDisplay(ApprovalPresentation.RequireName(value));
+        if (text == sentinel) throw ApprovalPresentation.CannotDisplay();
+        return text;
+    }
+
+    // Kizárólag megjelenítési összevetés és rendezés; a kötött értékekhez nem nyúlunk.
+    private static string CanonicalDisplay(string value)
+    {
+        try { return value.Normalize(NormalizationForm.FormC); }
+        catch (ArgumentException) { throw ApprovalPresentation.CannotDisplay(); }
+    }
+
     private static void RequireCatalog(JsonElement source, string key, IEnumerable<string> required)
     {
         var ids = RegistryPolicy.List(source).Select(item => RegistryPolicy.RequiredId(item, key)).ToArray();
