@@ -106,6 +106,10 @@ public sealed class HomeAssistantRegistryTests
     {
         public string Name { get; set; } = "Régi";
         public string? Area { get; set; }
+        public string? Device { get; set; }
+        public string? DeviceArea { get; set; } = "bedroom";
+        public string? DevicesCatalog { get; set; }
+        public int DeviceReads { get; private set; }
         public string LabelsCatalog { get; set; } = "[{\"label_id\":\"keep\",\"name\":\"Megmarad\"},{\"label_id\":\"new\",\"name\":\"Új\"}]";
         public string AreasCatalog { get; set; } = "[{\"area_id\":\"room\",\"name\":\"Szoba\"}]";
         public string? DisabledBy { get; set; }
@@ -124,7 +128,8 @@ public sealed class HomeAssistantRegistryTests
             {
                 RequestBody = command => command.GetProperty("type").GetString() switch
                 {
-                    "config/entity_registry/get" => JsonSerializer.Serialize(new { entity_id = "sensor.room", device_id = (string?)null, area_id = Area, labels = new[] { "keep" }, name = Name, icon = (string?)null, hidden_by = (string?)null, disabled_by = DisabledBy }),
+                    "config/entity_registry/get" => JsonSerializer.Serialize(new { entity_id = "sensor.room", device_id = Device, area_id = Area, labels = new[] { "keep" }, name = Name, icon = (string?)null, hidden_by = (string?)null, disabled_by = DisabledBy }),
+                    "config/device_registry/list" => Devices(),
                     "config/label_registry/list" => LabelsCatalog,
                     "config/area_registry/list" => AreasCatalog,
                     "config/entity_registry/update" => Updated(command),
@@ -142,6 +147,7 @@ public sealed class HomeAssistantRegistryTests
             Operation = new(new HomeAssistantRegistryService(Client, Policy, KillSwitch));
         }
         private string Updated(JsonElement command) { BeforeWrite?.Invoke(); LastUpdate = command.Clone(); Writes++; return "{}"; }
+        private string Devices() { DeviceReads++; return DevicesCatalog ?? JsonSerializer.Serialize(new[] { new { id = "device", area_id = DeviceArea } }); }
         public void Dispose() => Client.Dispose();
     }
 

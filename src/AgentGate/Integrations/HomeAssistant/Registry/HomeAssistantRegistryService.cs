@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using AgentGate.Approval;
 using AgentGate.Policy;
+using AgentGate.Tools;
 
 namespace AgentGate.Integrations.HomeAssistant.Registry;
 
@@ -17,7 +18,7 @@ public sealed class HomeAssistantRegistryService(HomeAssistantClient? configured
         policy.RequireEntity(client, entityId);
         var patch = RegistryPolicy.Patch(arguments["patch"]);
         var intent = JsonSerializer.SerializeToElement(new SortedDictionary<string, object?>(patch, StringComparer.Ordinal));
-        var before = Snapshot(await client.ReadRegistryEntityAsync(entityId, intent, ct), entityId);
+        var before = await ReadSnapshotAsync(entityId, intent, ct);
         var after = new SortedDictionary<string, object?>(before, StringComparer.Ordinal);
         var changes = new SortedDictionary<string, object?>(StringComparer.Ordinal);
         foreach (var (name, value) in patch.Where(pair => pair.Key is not ("labels_add" or "labels_remove")))
@@ -35,6 +36,7 @@ public sealed class HomeAssistantRegistryService(HomeAssistantClient? configured
             after["labels"] = labels;
             changes["labels"] = labels;
         }
+        ResolveArea(after);
         if (changes.Count == 0 || JsonSerializer.Serialize(before) == JsonSerializer.Serialize(after)) throw RegistryPolicy.Invalid();
         JsonElement? areas = null;
         JsonElement? labelsCatalog = null;
@@ -52,13 +54,13 @@ public sealed class HomeAssistantRegistryService(HomeAssistantClient? configured
         if (includePresentation)
         {
             // Ugyanazok a szűk registry-olvasások, az előállapot feloldására is. Nincs általános végrehajtó.
-            if (changes.ContainsKey("area_id") && areas is null && before["area_id"] is not null)
+            if (changes.ContainsKey("area_id") && areas is null && (before["effective_area_id"] is not null || after["effective_area_id"] is not null))
                 areas = await client.ReadRegistryAreasAsync(ct);
             var display = new Dictionary<string, ApprovalDisplayChange>(StringComparer.Ordinal);
             foreach (var field in changes.Keys)
             {
-                var oldValue = DisplayValue(field, before[field], areas, labelsCatalog);
-                var newValue = DisplayValue(field, after[field], areas, labelsCatalog);
+                var oldValue = field == "area_id" ? DisplayArea(before, areas) : DisplayValue(field, before[field], labelsCatalog);
+                var newValue = field == "area_id" ? DisplayArea(after, areas) : DisplayValue(field, after[field], labelsCatalog);
                 if (CanonicalDisplay(oldValue) == CanonicalDisplay(newValue) && JsonSerializer.Serialize(before[field]) != JsonSerializer.Serialize(after[field]))
                     throw ApprovalPresentation.CannotDisplay();
                 display.Add(field, new(oldValue, newValue));
@@ -82,15 +84,17 @@ public sealed class HomeAssistantRegistryService(HomeAssistantClient? configured
         using var patch = JsonDocument.Parse(operation.Parameters["patch"]!);
         var arguments = new Dictionary<string, JsonElement> { ["entity_id"] = JsonSerializer.SerializeToElement(entityId), ["patch"] = patch.RootElement.Clone() };
         // A megjelenő név nem célegyezés: a végrehajtás változatlanul a kötött paramétereket ellenőrzi.
-        var current = await PrepareCoreAsync(arguments, ct, false);
-        if (current.ComputeHash("") != operation.ComputeHash("")) throw RegistryPolicy.Invalid();
+        PreparedOperation current;
+        try { current = await PrepareCoreAsync(arguments, ct, false); }
+        catch (GateToolException) { throw new RegistryPrestateChangedException(); }
+        if (current.ComputeHash("") != operation.ComputeHash("")) throw new RegistryPrestateChangedException();
         using var changes = JsonDocument.Parse(operation.Parameters["changes"]!);
         await client.UpdateRegistryEntityAsync(entityId, changes.RootElement, async token =>
         {
             // Az írási kapcsolat hitelesítése UTÁN, a parancs kiküldése előtt újraolvasunk.
             // Ez szándékosan best-effort; a standard HA update nem nyújt atomi CAS-t.
-            var immediate = Snapshot(await client.ReadRegistryEntityAsync(entityId, patch.RootElement, token), entityId);
-            if (JsonSerializer.Serialize(immediate) != operation.Parameters["before"]) throw RegistryPolicy.Invalid();
+            var immediate = await ReadSnapshotAsync(entityId, patch.RootElement, token);
+            if (JsonSerializer.Serialize(immediate) != operation.Parameters["before"]) throw new RegistryPrestateChangedException();
             policy.RequireEntity(client, entityId);
             if (await killSwitch.IsEnabledAsync(token)) throw RegistryPolicy.Invalid();
             token.ThrowIfCancellationRequested();
@@ -104,6 +108,20 @@ public sealed class HomeAssistantRegistryService(HomeAssistantClient? configured
             !arguments.TryGetValue("entity_id", out var entity) || entity.ValueKind != JsonValueKind.String ||
             !arguments.TryGetValue("patch", out var patch)) throw RegistryPolicy.Invalid();
         RegistryPolicy.Patch(patch);
+    }
+
+    private async Task<SortedDictionary<string, object?>> ReadSnapshotAsync(string entityId, JsonElement intent, CancellationToken ct)
+    {
+        var snapshot = Snapshot(await client.ReadRegistryEntityAsync(entityId, intent, ct), entityId);
+        snapshot["device_area_id"] = snapshot["device_id"] is string deviceId ? await client.ReadRegistryDeviceAreaAsync(deviceId, ct) : null;
+        ResolveArea(snapshot);
+        return snapshot;
+    }
+
+    private static void ResolveArea(IDictionary<string, object?> snapshot)
+    {
+        snapshot["effective_area_id"] = snapshot["area_id"] ?? snapshot["device_area_id"];
+        snapshot["area_source"] = snapshot["area_id"] is not null ? "entity" : snapshot["device_area_id"] is not null ? "device" : "none";
     }
 
     private static SortedDictionary<string, object?> Snapshot(JsonElement entity, string entityId)
@@ -128,17 +146,20 @@ public sealed class HomeAssistantRegistryService(HomeAssistantClient? configured
         if (owner is not (null or "user" or "integration" or "config_entry" or "device")) throw RegistryPolicy.Invalid();
         return owner;
     }
-    private static string DisplayValue(string field, object? value, JsonElement? areas, JsonElement? labels)
+    private static string DisplayValue(string field, object? value, JsonElement? labels)
     {
         return field switch
         {
             "name" => value is null ? "Alapértelmezett" : DisplayName((string)value, "Alapértelmezett"),
-            "area_id" => value is null ? "Nincs" : CatalogName(areas, "area_id", (string)value),
             "labels" => ((string[])value!).Length == 0 ? "Nincs" : string.Join(", ", ((string[])value!).Select(id => CatalogName(labels, "label_id", id)).Order(StringComparer.Ordinal)),
             "hidden_by" or "disabled_by" => value switch { null => "Nem", "user" => "Igen", _ => throw ApprovalPresentation.CannotDisplay() },
             _ => throw ApprovalPresentation.CannotDisplay()
         };
     }
+
+    private static string DisplayArea(IDictionary<string, object?> snapshot, JsonElement? areas) =>
+        snapshot["effective_area_id"] is not string id ? "Nincs" : CatalogName(areas, "area_id", id) +
+            (snapshot["area_source"] is "device" ? " (öröklött)" : " (saját)");
 
     private static string CatalogName(JsonElement? source, string key, string id)
     {

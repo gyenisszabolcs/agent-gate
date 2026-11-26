@@ -30,6 +30,21 @@ public sealed partial class HomeAssistantClient
     internal Task<JsonElement> ReadRegistryAreasAsync(CancellationToken ct) => RegistrySocket.CallAsync(logSockets, http.BaseAddress!, secrets, secretId, timeout,
         new Dictionary<string, object?> { ["id"] = 1, ["type"] = "config/area_registry/list" }, null, true, ct);
 
+    internal async Task<string?> ReadRegistryDeviceAreaAsync(string deviceId, CancellationToken ct)
+    {
+        var source = await RegistrySocket.CallAsync(logSockets, http.BaseAddress!, secrets, secretId, timeout,
+            new Dictionary<string, object?> { ["id"] = 1, ["type"] = "config/device_registry/list" }, null, true, ct);
+        // Csak az azonosító és a terület vetülete kell; a többi eszközadat nem jut tovább.
+        var areas = new Dictionary<string, string?>(StringComparer.Ordinal);
+        foreach (var item in RegistryPolicy.List(source))
+        {
+            var id = RegistryPolicy.RequiredId(item, "id");
+            var area = item.GetProperty("area_id");
+            if (!areas.TryAdd(id, area.ValueKind == JsonValueKind.Null ? null : RegistryPolicy.Id(area))) throw RegistryPolicy.Invalid();
+        }
+        return areas.TryGetValue(deviceId, out var result) ? result : throw RegistryPolicy.Invalid();
+    }
+
     internal Task<JsonElement> ReadRegistryLabelsAsync(bool lossless, CancellationToken ct) => RegistrySocket.CallAsync(logSockets, http.BaseAddress!, secrets, secretId, timeout,
         new Dictionary<string, object?> { ["id"] = 1, ["type"] = "config/label_registry/list" }, null, lossless, ct);
 
