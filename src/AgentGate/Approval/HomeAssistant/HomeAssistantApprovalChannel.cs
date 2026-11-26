@@ -336,15 +336,7 @@ public sealed class HomeAssistantApprovalChannel(
             deadline.CancelAfter(TimeSpan.FromSeconds(options.TimeoutSeconds));
             var lease = await ReadTokenLeaseAsync(deadline.Token);
             var token = lease.Value;
-            var state = outcome.State switch
-            {
-                ApprovalState.Executed => "jóváhagyva és végrehajtva",
-                ApprovalState.Rejected => "elutasítva",
-                ApprovalState.Expired => "lejárt",
-                _ => "sikertelen; ez nem jelenti a már végrehajtott művelet visszagörgetését"
-            };
-            var message = $"{ApprovalPushFormatter.SafeLine(grant.Notice.Caller, 128, token)}\n{grant.Notice.Tool}\n{state}\n{ApprovalPushFormatter.SafeLine(outcome.Result ?? "", 512, token)}\nAzonosító: {outcome.Id.ToString("N")[..8]}";
-            await PostAsync(new { title = "Gate eredmény", message = message.Replace(token, "[REDACTED]", StringComparison.Ordinal) }, lease, deadline.Token);
+            await PostAsync(new { title = "Gate eredmény", message = presentation.Outcome(grant.Notice, outcome.State, token, outcome.Result) }, lease, deadline.Token);
         }
         catch (Exception)
         {

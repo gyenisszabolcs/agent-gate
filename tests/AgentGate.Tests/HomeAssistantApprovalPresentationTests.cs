@@ -385,7 +385,7 @@ public sealed partial class HomeAssistantApprovalChannelTests
         Assert.True(!message.Contains(token[..12], StringComparison.Ordinal) && !message.Contains(canary, StringComparison.Ordinal), "Titok vagy vágási tokenrészlet a megjelenítésben.");
         var lines = message.Split('\n');
         Assert.True(lines.All(line => !line.Any(character => char.IsControl(character) || char.GetUnicodeCategory(character) is UnicodeCategory.Format or UnicodeCategory.LineSeparator or UnicodeCategory.ParagraphSeparator)), "Vezérlőkarakter maradt a szövegben.");
-        Assert.Equal(outcome ? 5 : 2, lines.Length);
+        Assert.Equal(2, lines.Length);
         if (!outcome)
         {
             Assert.Single(lines, line => line.StartsWith("Mikaela kéri · lejár ", StringComparison.Ordinal));

@@ -18,6 +18,34 @@ public sealed class GateConfigurationCollection;
 public sealed class GateConfigurationTests
 {
     [Fact]
+    public void RegistrySectionPassesStartupFileAndExistingPolicyValidation()
+    {
+        using var files = new ConfigurationFiles();
+        File.WriteAllText(files.Path, """{"HomeAssistantRegistry":{"Enabled":true,"IncludeEntityLabels":true,"EntityDenylist":["sensor.private"]}}""");
+        var builder = files.CreateBuilder();
+        GateConfiguration.AddStartupFile(builder.Configuration, files.Path);
+        var policy = AgentGate.Integrations.HomeAssistant.Registry.RegistryPolicy.FromConfiguration(builder.Configuration);
+        Assert.True(policy.Enabled);
+        Assert.True(policy.IncludeEntityLabels);
+        Assert.Equal("sensor.private", builder.Configuration["HomeAssistantRegistry:EntityDenylist:0"]);
+    }
+
+    [Theory]
+    [InlineData("{\"Unexpected\":true}")]
+    [InlineData("{\"Enabled\":\"maybe\"}")]
+    [InlineData("{\"IncludeEntityLabels\":[true]}")]
+    [InlineData("{\"EntityDenylist\":[\"not-an-entity\"]}")]
+    public void RegistryJsonSectionStillRequiresItsOwnPolicyValidation(string section)
+    {
+        using var files = new ConfigurationFiles();
+        File.WriteAllText(files.Path, "{\"HomeAssistantRegistry\":" + section + "}");
+        var builder = files.CreateBuilder();
+        GateConfiguration.AddStartupFile(builder.Configuration, files.Path);
+        Assert.Throws<Microsoft.Extensions.Options.OptionsValidationException>(() =>
+            AgentGate.Integrations.HomeAssistant.Registry.RegistryPolicy.FromConfiguration(builder.Configuration));
+    }
+
+    [Fact]
     public void MissingFilePreservesBuiltInAppsettings()
     {
         using var files = new ConfigurationFiles();

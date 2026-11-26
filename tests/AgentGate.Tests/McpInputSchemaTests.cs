@@ -67,7 +67,18 @@ public sealed class McpInputSchemaTests
         Assert.Contains("a gate maga olvassa", description);
         Assert.Contains("patch.area_id:null", description);
         Assert.Contains("hiányzó mező változatlan", description);
-        Assert.Contains("device_id) továbbra is tiltott", description);
+        Assert.Contains("device_entities(device_id)", description);
+        Assert.Contains("összes aktív", description);
+        Assert.Contains("összes entitása ugyanabba a területbe", description);
+        Assert.Contains("az eszköz területét", description);
+        Assert.Contains("eltérő saját entitásterületet", description);
+        Assert.Contains("Ha csak egy entitás", description);
+        Assert.Contains("eszköz nélküli entitás", description);
+        Assert.Contains("bizonytalan esetben kérdezz", description);
+        Assert.Contains("előbb az eszközmódosítás sikerét", description);
+        Assert.DoesNotContain("továbbra is tiltott", description);
+        Assert.Contains("minden egyes módosítás", description);
+        Assert.Contains("nem automatikus többcélú művelet", description);
         var exampleStart = description.IndexOf('{');
         var exampleEnd = description.IndexOf("}}", exampleStart, StringComparison.Ordinal) + 2;
         using var example = JsonDocument.Parse(description[exampleStart..exampleEnd]);
@@ -83,11 +94,11 @@ public sealed class McpInputSchemaTests
         // A false helyett ekvivalens, minden értéket kizáró objektumséma zárja az ismeretlen mezőket.
         Assert.Empty(patch.GetProperty("additionalProperties").GetProperty("not").EnumerateObject());
         var fields = patch.GetProperty("properties");
-        Assert.Equal(new[] { "area_id", "disabled_by", "hidden_by", "icon", "labels_add", "labels_remove", "name" },
+        Assert.Equal(new[] { "area_id", "disabled_by", "hidden_by", "icon", "labels", "labels_add", "labels_remove", "name", "name_by_user" },
             fields.EnumerateObject().Select(field => field.Name).Order(StringComparer.Ordinal));
-        foreach (var name in new[] { "area_id", "name", "icon", "hidden_by", "disabled_by" })
+        foreach (var name in new[] { "area_id", "name", "name_by_user", "icon", "hidden_by", "disabled_by" })
             Assert.Equal(new[] { "string", "null" }, fields.GetProperty(name).GetProperty("type").EnumerateArray().Select(type => type.GetString()));
-        foreach (var name in new[] { "labels_add", "labels_remove" })
+        foreach (var name in new[] { "labels", "labels_add", "labels_remove" })
         {
             var field = fields.GetProperty(name);
             Assert.Equal("array", field.GetProperty("type").GetString());

@@ -15,6 +15,12 @@ public sealed partial class ApprovalPushFormatter(Func<TimeZoneInfo>? timeZone =
     {
         var zone = (timeZone ?? (() => TimeZoneInfo.FindSystemTimeZoneById("Europe/Budapest")))();
         var expires = TimeZoneInfo.ConvertTime(request.ExpiresAt, zone).ToString("HH:mm", CultureInfo.InvariantCulture);
+        var (action, target) = Content(request, token);
+        return ($"Jóváhagyás: {action}", $"{target}\nMikaela kéri · lejár {expires}");
+    }
+
+    private static (string Action, string Target) Content(ApprovalNotice request, string token)
+    {
         if (request.Risk is not (RiskLevel.SensitiveControl or RiskLevel.Configuration or RiskLevel.System))
             throw new InvalidOperationException("A jóváhagyási kérés nem küldhető.");
         var target = ApprovalPresentation.IsHumanName(request.Presentation?.TargetName, token)
@@ -31,12 +37,12 @@ public sealed partial class ApprovalPushFormatter(Func<TimeZoneInfo>? timeZone =
             target = display.RegistryLine(token);
             action = display.Changes.Count == 1 ? display.Changes.Keys.Single() switch
             {
-                "name" => "név módosítása", "area_id" => "terület módosítása", "labels" => "címkék módosítása",
+                "name" or "name_by_user" => "név módosítása", "area_id" => "terület módosítása", "labels" => "címkék módosítása",
                 "hidden_by" => "elrejtés módosítása", "disabled_by" => "letiltás módosítása",
                 _ => throw ApprovalPresentation.CannotDisplay()
             } : "nyilvántartás módosítása";
         }
-        return ($"Jóváhagyás: {action}", $"{target}\nMikaela kéri · lejár {expires}");
+        return (action, target);
     }
 
     public static string SafeLine(string value, int limit, string token)

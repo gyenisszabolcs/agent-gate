@@ -15,9 +15,13 @@ public sealed partial class ApprovalPushFormatter
             using var document = JsonDocument.Parse(summary);
             var root = document.RootElement;
             RegistrySocket.ValidateUnique(root);
-            if (root.EnumerateObject().Count() != 5 || root.EnumerateObject().Any(field => field.Name is not ("entity_id" or "patch" or "before" or "after" or "changes"))) throw InvalidSummary();
-            var entity = Text(root, "entity_id");
-            if (!ControlPolicy.CanonicalEntity(entity)) throw InvalidSummary();
+            var deviceTarget = root.TryGetProperty("device_id", out var deviceId);
+            var targetField = deviceTarget ? "device_id" : "entity_id";
+            if (root.EnumerateObject().Count() != 5 || root.EnumerateObject().Any(field =>
+                field.Name != targetField && field.Name is not ("patch" or "before" or "after" or "changes"))) throw InvalidSummary();
+            var target = Text(root, targetField);
+            if (deviceTarget) _ = RegistryPolicy.Id(deviceId);
+            else if (!ControlPolicy.CanonicalEntity(target)) throw InvalidSummary();
             using var before = JsonDocument.Parse(Text(root, "before"));
             using var after = JsonDocument.Parse(Text(root, "after"));
             using var changes = JsonDocument.Parse(Text(root, "changes"));
@@ -26,10 +30,11 @@ public sealed partial class ApprovalPushFormatter
             RegistrySocket.ValidateUnique(changes.RootElement);
             if (!changes.RootElement.EnumerateObject().Select(field => field.Name).ToHashSet(StringComparer.Ordinal).SetEquals(display.Changes.Keys))
                 throw InvalidSummary();
-            var lines = new List<string> { $"Entitás: {entity}", "Változás (előtte → utána):" };
+            var lines = new List<string> { $"Cél: {target}", "Változás (előtte → utána):" };
             foreach (var field in changes.RootElement.EnumerateObject().OrderBy(field => field.Name, StringComparer.Ordinal))
             {
-                if (field.Name is not ("area_id" or "labels" or "name" or "icon" or "hidden_by" or "disabled_by")) throw InvalidSummary();
+                if (deviceTarget ? field.Name is not ("area_id" or "labels" or "name_by_user") :
+                    field.Name is not ("area_id" or "labels" or "name" or "icon" or "hidden_by" or "disabled_by")) throw InvalidSummary();
                 var oldValue = before.RootElement.GetProperty(field.Name);
                 var newValue = after.RootElement.GetProperty(field.Name);
                 if (newValue.GetRawText() != field.Value.GetRawText()) throw InvalidSummary();

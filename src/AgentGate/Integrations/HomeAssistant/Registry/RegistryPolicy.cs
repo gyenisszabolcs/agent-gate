@@ -44,6 +44,29 @@ public sealed class RegistryPolicy
         try { client.RequireRegistryEntity(entityId); }
         catch (HomeAssistantException) { throw Denied(); }
     }
+    internal void RequireDevice()
+    {
+        if (!Enabled) throw Denied();
+    }
+
+    internal static Dictionary<string, object?> DevicePatch(JsonElement patch)
+    {
+        if (patch.ValueKind != JsonValueKind.Object) throw Invalid();
+        try { RegistrySocket.ValidateUnique(patch); }
+        catch (InvalidOperationException) { throw Invalid(); }
+        var result = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var field in patch.EnumerateObject())
+            result.Add(field.Name, field.Name switch
+            {
+                "area_id" => field.Value.ValueKind == JsonValueKind.Null ? null : Id(field.Value),
+                "name_by_user" => Text(field.Value, 80),
+                "labels" => Ids(field.Value),
+                _ => throw Invalid()
+            });
+        if (result.Count == 0) throw Invalid();
+        return result;
+    }
+
     internal static GateToolException Denied() => new("A nyilvántartási entitás nem engedélyezett.");
     internal static GateToolException Invalid() => new("A nyilvántartási mező vagy bemenet nem engedélyezett vagy érvénytelen.");
     internal static string? Text(JsonElement element, int maximum, bool nullable = true)

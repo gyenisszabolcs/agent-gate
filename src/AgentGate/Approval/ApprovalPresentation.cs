@@ -65,7 +65,7 @@ public sealed class ApprovalPresentation(string? targetName, IReadOnlyDictionary
 
     public static string FieldName(string field) => field switch
     {
-        "name" => "Név", "area_id" => "Terület", "labels" => "Címkék",
+        "name" or "name_by_user" => "Név", "area_id" => "Terület", "labels" => "Címkék",
         "hidden_by" => "Elrejtés", "disabled_by" => "Letiltás",
         _ => throw CannotDisplay()
     };
