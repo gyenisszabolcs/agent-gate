@@ -61,7 +61,10 @@ public sealed partial class HomeAssistantApprovalChannelTests
         Assert.True(Guid.TryParse(text[(text.LastIndexOf(' ') + 1)..], out var id));
         using var push = JsonDocument.Parse(app.Http.Body!);
         var message = push.RootElement.GetProperty("message").GetString()!;
-        Assert.Contains("sensor.room", message);
+        Assert.Equal("Jóváhagyás: név módosítása", push.RootElement.GetProperty("title").GetString());
+        Assert.DoesNotContain("sensor.room", message);
+        Assert.Equal(2, message.Split('\n').Length);
+        Assert.Contains("Név: Régi → Új", message);
         Assert.Contains("Régi", message);
         Assert.Contains("Új", message);
         var (approve, reject) = Codes(app.Http);

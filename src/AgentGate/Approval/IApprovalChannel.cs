@@ -14,7 +14,7 @@ public interface IApprovalChannel
 
 // A csatorna csak szűrt megjelenítési adatot kap, soha nem a végrehajtási paramétereket vagy hash-t.
 public sealed record ApprovalNotice(Guid Id, string Caller, string Tool, RiskLevel Risk,
-    string Summary, DateTimeOffset ExpiresAt);
+    string Summary, DateTimeOffset ExpiresAt, ApprovalPresentation? Presentation = null);
 public sealed record ApprovalDecision(Guid Id, ApprovalChoice Choice, string Actor, DateTimeOffset DecidedAt);
 public enum ApprovalChoice { Approve, Reject }
 public enum ApprovalState { Pending, Executed, Rejected, Expired, Failed }

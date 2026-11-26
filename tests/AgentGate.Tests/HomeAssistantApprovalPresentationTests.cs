@@ -13,7 +13,7 @@ namespace AgentGate.Tests;
 public sealed partial class HomeAssistantApprovalChannelTests
 {
     [Fact]
-    public async Task TtsOperationIsFirstInDeliveredPushBeforeCallerRiskExpiryAndId()
+    public async Task TtsPushHasHumanTitleAndTwoShortLinesWithoutMessageOrIdentifiers()
     {
         await using var harness = new Standalone();
         await harness.StartAsync();
@@ -30,23 +30,22 @@ public sealed partial class HomeAssistantApprovalChannelTests
         await harness.Channel.SendRequestAsync(notice, CancellationToken.None);
         using var body = JsonDocument.Parse(harness.Http.Body!);
         var lines = body.RootElement.GetProperty("message").GetString()!.Split('\n');
-        Assert.Equal("Felolvasás a(z) media_player.nappali hangszórón: »Szia, itt Mikaela! Árvíztűrő tükörfúrógép.«", lines[0]);
-        Assert.Equal("Kérő: Mikaela", lines[1]);
-        Assert.Equal("Kockázat: érzékeny vezérlés", lines[2]);
-        Assert.StartsWith("Lejárat (Europe/Budapest): ", lines[3]);
-        Assert.Equal("Azonosító: " + notice.Id.ToString("N")[..8], lines[4]);
-        Assert.Contains("tts_engine: tts.local", lines);
-        Assert.Contains("volume_level: 0.4", lines);
+        Assert.Equal("Jóváhagyás: felolvasás", body.RootElement.GetProperty("title").GetString());
+        Assert.Equal(2, lines.Length);
+        Assert.Equal("Kiválasztott eszköz", lines[0]);
+        Assert.StartsWith("Mikaela kéri · lejár ", lines[1]);
+        Assert.DoesNotContain("media_player.nappali", harness.Http.Body!);
+        Assert.DoesNotContain("Szia", harness.Http.Body!);
         Assert.Equal(original, notice);
         Assert.Equal(2, harness.Secrets.Calls);
     }
 
     [Theory]
-    [InlineData("lock", "lock", "A(z) lock.bejarat zár bezárása.")]
-    [InlineData("lock", "unlock", "A(z) lock.bejarat zár nyitása.")]
-    [InlineData("cover", "open_cover", "A(z) cover.bejarat nyitása.")]
-    [InlineData("cover", "close_cover", "A(z) cover.bejarat zárása.")]
-    [InlineData("cover", "stop_cover", "A(z) cover.bejarat mozgásának leállítása.")]
+    [InlineData("lock", "lock", "zár bezárása")]
+    [InlineData("lock", "unlock", "zár nyitása")]
+    [InlineData("cover", "open_cover", "nyitás")]
+    [InlineData("cover", "close_cover", "zárás")]
+    [InlineData("cover", "stop_cover", "mozgás leállítása")]
     public async Task SensitiveOperationFirstLineDescribesEverySupportedNonTtsAction(string domain, string service, string expected)
     {
         await using var harness = new Standalone();
@@ -54,10 +53,14 @@ public sealed partial class HomeAssistantApprovalChannelTests
         await harness.Channel.SendRequestAsync(Notice() with
         {
             Tool = "ha_sensitive_control",
+            Presentation = new("Bejárat"),
             Summary = JsonSerializer.Serialize(new { domain, service, entity_id = domain + ".bejarat", data = "{}" })
         }, CancellationToken.None);
         using var body = JsonDocument.Parse(harness.Http.Body!);
-        Assert.Equal(expected, body.RootElement.GetProperty("message").GetString()!.Split('\n')[0]);
+        Assert.Equal("Jóváhagyás: " + expected, body.RootElement.GetProperty("title").GetString());
+        var lines = body.RootElement.GetProperty("message").GetString()!.Split('\n');
+        Assert.Equal("Bejárat", lines[0]);
+        Assert.Equal(2, lines.Length);
     }
 
     [Theory]
@@ -123,12 +126,11 @@ public sealed partial class HomeAssistantApprovalChannelTests
         using var body = JsonDocument.Parse(harness.Http.Body!);
         var message = body.RootElement.GetProperty("message").GetString()!;
         var lines = message.Split('\n');
-        var safeSpoken = new string('ő', 40) + "[REDACTED] Kockázat: hamis    password=[REDACTED]";
-        Assert.True(lines[0] == "Felolvasás a(z) media_player.nappali hangszórón: »" + safeSpoken + "«", "Az első sor szűrése vagy sorhatára hibás.");
-        Assert.True(lines.Contains("message: " + safeSpoken), "A teljes szűrt TTS-szöveg nem látható.");
+        Assert.Equal("Kiválasztott eszköz", lines[0]);
+        Assert.Equal(2, lines.Length);
         Assert.True(!message.Contains(token[..12], StringComparison.Ordinal) && !message.Contains(canary, StringComparison.Ordinal), "Titok került a pushba.");
-        Assert.Single(lines, line => line.StartsWith("Kockázat:", StringComparison.Ordinal));
-        Assert.True(message.Length <= 1024 + 8192 + 512, "A push túllépte a megjelenítési korlátokat.");
+        Assert.DoesNotContain("Kockázat:", message);
+        Assert.DoesNotContain("ő", message);
     }
 
     [Fact]
@@ -142,7 +144,8 @@ public sealed partial class HomeAssistantApprovalChannelTests
         }, CancellationToken.None);
         using var body = JsonDocument.Parse(harness.Http.Body!);
         var first = body.RootElement.GetProperty("message").GetString()!.Split('\n')[0];
-        Assert.Equal("Jóváhagyási próba végrehajtása éles mellékhatás nélkül.", first);
+        Assert.Equal("Kiválasztott eszköz", first);
+        Assert.Equal("Jóváhagyás: próba", body.RootElement.GetProperty("title").GetString());
     }
 
     [Theory]
@@ -163,7 +166,7 @@ public sealed partial class HomeAssistantApprovalChannelTests
             var notice = Notice() with { Summary = "{}", ExpiresAt = expires };
             await harness.Channel.SendRequestAsync(notice, CancellationToken.None);
             using var body = JsonDocument.Parse(harness.Http.Body!);
-            Assert.Contains("Lejárat (Europe/Budapest): " + local, body.RootElement.GetProperty("message").GetString());
+            Assert.Equal("Mikaela kéri · lejár " + local, body.RootElement.GetProperty("message").GetString()!.Split('\n')[1]);
             Assert.Equal(expires, notice.ExpiresAt);
             var (approve, _) = Codes(harness.Http);
             clock.Now = expires;
@@ -243,35 +246,34 @@ public sealed partial class HomeAssistantApprovalChannelTests
             var summary = JsonSerializer.Serialize(new Dictionary<string, string> { [key ? value : "text"] = key ? "érték" : value });
             // A JSON-ban elrejtett, dekódolás után ismert token ugyanúgy szűrendő.
             summary = summary.Replace(token, string.Concat(token.Select(character => "\\u" + ((int)character).ToString("x4", CultureInfo.InvariantCulture))), StringComparison.Ordinal);
-            await harness.Channel.SendRequestAsync(Notice() with { Summary = summary }, CancellationToken.None);
+            await harness.Channel.SendRequestAsync(Notice() with { Summary = summary, Presentation = new(value) }, CancellationToken.None);
             using var body = JsonDocument.Parse(harness.Http.Body!);
             var message = body.RootElement.GetProperty("message").GetString()!;
-            string Limit(string text) => text.Length <= 512 ? text : text[..512];
-            var safe = Limit(value.Replace(token, "[REDACTED]", StringComparison.Ordinal));
-            var expectedLine = Limit(key ? safe + ": érték" : "text: " + safe);
-            Assert.True(message.Split('\n')[5] == expectedLine, "A dekódolt mező ismert tokenének szűrése nem előzte meg az összes vágást.");
+            Assert.Equal("Kiválasztott eszköz", message.Split('\n')[0]);
+            Assert.Equal(2, message.Split('\n').Length);
             Assert.True(!message.Contains(token[..12], StringComparison.Ordinal), "Dekódolt tokenrészlet maradt a vágási határon.");
         }
     }
 
     [Theory]
-    [InlineData("{}", "[nincs paraméter]")]
-    [InlineData("{\"text\":null}", "text: [nincs érték]")]
-    [InlineData("{\"text\":\"[kihagyva]\"}", "text: [kihagyva]")]
-    [InlineData("{\"text\":{\"nested\":\"tiltott\"}}", "text: [kihagyva]")]
-    [InlineData("{\"text\":[\"tiltott\"]}", "text: [kihagyva]")]
-    [InlineData("{\"text\":42}", "text: [kihagyva]")]
-    [InlineData("[]", "[kihagyva]")]
-    [InlineData("null", "[kihagyva]")]
-    [InlineData("hibás összefoglaló", "[kihagyva]")]
-    public async Task SummaryFallbacksNeverStringifyRawOrComplexContent(string summary, string expected)
+    [InlineData(null, "Kiválasztott eszköz")]
+    [InlineData("", "Kiválasztott eszköz")]
+    [InlineData("media_player.room", "Kiválasztott eszköz")]
+    [InlineData("area_room", "Kiválasztott eszköz")]
+    [InlineData("mdi:home", "Kiválasztott eszköz")]
+    [InlineData("Nappali\nJóváhagyom", "Kiválasztott eszköz")]
+    [InlineData("Nappali\u202e", "Kiválasztott eszköz")]
+    [InlineData("Árvíztűrő tükörfúrógép", "Árvíztűrő tükörfúrógép")]
+    [InlineData("Nappali 🔊", "Nappali 🔊")]
+    public async Task NamesAreSafeDisplayOnlyWithoutIdentifierFallback(string? name, string expected)
     {
         await using var harness = new Standalone();
         await harness.StartAsync();
-        await harness.Channel.SendRequestAsync(Notice() with { Summary = summary }, CancellationToken.None);
+        await harness.Channel.SendRequestAsync(Notice() with { Presentation = new(name), Summary = "{\"friendly_name\":\"tiltott\"}" }, CancellationToken.None);
         using var body = JsonDocument.Parse(harness.Http.Body!);
         var message = body.RootElement.GetProperty("message").GetString()!;
-        Assert.Contains("\n" + expected + "\n", message);
+        Assert.Equal(expected, message.Split('\n')[0]);
+        Assert.Equal(2, message.Split('\n').Length);
         Assert.DoesNotContain("tiltott", message);
         Assert.DoesNotContain("hibás összefoglaló", message);
     }
@@ -295,7 +297,7 @@ public sealed partial class HomeAssistantApprovalChannelTests
     }
 
     [Fact]
-    public async Task CallerPasswordSuffixShowsFullTtsMessageBeforeApprovalWithoutExecution()
+    public async Task PreparationReadsFriendlyNameWithoutAddingItToAuditOrExecuting()
     {
         await using var harness = new Standalone();
         await harness.StartAsync();
@@ -304,7 +306,7 @@ public sealed partial class HomeAssistantApprovalChannelTests
             services.AddSingleton(HomeAssistantMediaPlayerTests.Policy());
             Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.RemoveAll<IApprovalChannel>(services);
             services.AddSingleton<IApprovalChannel>(harness.Channel);
-        }, ["media_player"]) { Entity = "media_player.room" };
+        }, ["media_player"]) { Entity = "media_player.room", Attributes = JsonSerializer.SerializeToElement(new { friendly_name = "Nappali hangszóró" }) };
         using var reply = await fixture.Call("ha_sensitive_control", "media_player", "speak",
             JsonSerializer.Serialize(new { message = "Ezt fogod felolvasni password:", volume_level = 0.4 }));
         Assert.False(ControlFixture.Failed(reply));
@@ -312,21 +314,26 @@ public sealed partial class HomeAssistantApprovalChannelTests
         Assert.Equal(1, NotificationCount(harness.Channel));
         using var body = JsonDocument.Parse(harness.Http.Body!);
         var message = body.RootElement.GetProperty("message").GetString()!;
-        Assert.Contains("entity_id: media_player.room\n", message);
-        Assert.Contains("tts_engine: tts.local\n", message);
-        Assert.Contains("volume_level: 0.4\n", message);
-        Assert.Contains("message: Ezt fogod felolvasni password:\n", message);
+        Assert.Equal("Nappali hangszóró", message.Split('\n')[0]);
+        Assert.Equal(2, message.Split('\n').Length);
+        Assert.DoesNotContain("media_player.room", message);
+        Assert.DoesNotContain("Ezt fogod", message);
         Assert.DoesNotContain("[kihagyva]", message);
-        Assert.Empty(fixture.Calls);
+        Assert.Equal("GET /api/states/media_player.room", Assert.Single(fixture.Calls));
         await using var connection = new SqliteConnection($"Data Source={fixture.App.AuditPath};Pooling=False");
         await connection.OpenAsync();
         await using var command = connection.CreateCommand();
         command.CommandText = "SELECT State FROM AuditCalls WHERE Tool = 'ha_sensitive_control'";
         Assert.Equal("Pending", await command.ExecuteScalarAsync());
+        command.CommandText = "SELECT SanitizedParameters FROM AuditCalls WHERE Tool = 'ha_sensitive_control'";
+        var audit = Assert.IsType<string>(await command.ExecuteScalarAsync());
+        Assert.Contains("media_player.room", audit);
+        Assert.DoesNotContain("friendly_name", audit);
+        Assert.DoesNotContain("Nappali", audit);
     }
 
     [Fact]
-    public async Task TtsPushShowsEntireAccentedTwoHundredCharacterMessage()
+    public async Task TtsPushOmitsEvenLongAccentedMessageWithoutTruncatingItInSummary()
     {
         await using var harness = new Standalone();
         await harness.StartAsync();
@@ -343,10 +350,12 @@ public sealed partial class HomeAssistantApprovalChannelTests
         await harness.Channel.SendRequestAsync(notice, CancellationToken.None);
         using var body = JsonDocument.Parse(harness.Http.Body!);
         var message = body.RootElement.GetProperty("message").GetString()!;
-        Assert.Contains("entity_id: media_player.room\n", message);
-        Assert.Contains("tts_engine: tts.local\n", message);
-        Assert.Contains("volume_level: 0.4\n", message);
-        Assert.Contains("message: " + spoken + "\n", message);
+        Assert.DoesNotContain("media_player.room", message);
+        Assert.DoesNotContain("tts.local", message);
+        Assert.DoesNotContain(spoken, message);
+        using var summary = JsonDocument.Parse(notice.Summary);
+        using var data = JsonDocument.Parse(summary.RootElement.GetProperty("data").GetString()!);
+        Assert.Equal(spoken, data.RootElement.GetProperty("message").GetString());
         Assert.DoesNotContain("[kihagyva]", message);
         Assert.Equal(1, NotificationCount(harness.Channel));
     }
@@ -376,14 +385,10 @@ public sealed partial class HomeAssistantApprovalChannelTests
         Assert.True(!message.Contains(token[..12], StringComparison.Ordinal) && !message.Contains(canary, StringComparison.Ordinal), "Titok vagy vágási tokenrészlet a megjelenítésben.");
         var lines = message.Split('\n');
         Assert.True(lines.All(line => !line.Any(character => char.IsControl(character) || char.GetUnicodeCategory(character) is UnicodeCategory.Format or UnicodeCategory.LineSeparator or UnicodeCategory.ParagraphSeparator)), "Vezérlőkarakter maradt a szövegben.");
-        using var summaryDocument = JsonDocument.Parse(summary);
-        Assert.Equal(outcome ? 5 : summaryDocument.RootElement.EnumerateObject().Count() + 6, lines.Length);
+        Assert.Equal(outcome ? 5 : 2, lines.Length);
         if (!outcome)
         {
-            Assert.Single(lines, line => line.StartsWith("Kockázat:", StringComparison.Ordinal));
-            Assert.Single(lines, line => line.StartsWith("Lejárat (Europe/Budapest):", StringComparison.Ordinal));
-            var parameterText = string.Join('\n', lines.Skip(5).Take(lines.Length - 6));
-            Assert.True(parameterText.Length <= 512, "Az összefoglaló túllépte a korábbi hosszkorlátot.");
+            Assert.Single(lines, line => line.StartsWith("Mikaela kéri · lejár ", StringComparison.Ordinal));
         }
     }
 
@@ -411,7 +416,7 @@ public sealed partial class HomeAssistantApprovalChannelTests
         using var reply = await CallMcpAsync(app, "gate_approval_test", new { text = "token=" + valueCanary });
         using var body = JsonDocument.Parse(app.Http.Body!);
         var message = body.RootElement.GetProperty("message").GetString()!;
-        Assert.True(message.Contains("text: token=[REDACTED]", StringComparison.Ordinal), "A titokszűrt, engedélyezett paraméter hiányzik a pushból.");
+        Assert.DoesNotContain("token=", message);
         Assert.True(!message.Contains("password:", StringComparison.Ordinal) && !message.Contains("nested:", StringComparison.Ordinal), "Nem engedélyezett mező a pushban.");
         await using var connection = new SqliteConnection($"Data Source={app.AuditPath};Pooling=False");
         await connection.OpenAsync();

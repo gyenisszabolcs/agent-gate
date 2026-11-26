@@ -32,16 +32,17 @@ public sealed class HomeAssistantRegistryExecutionTests
     }
 
     [Fact]
-    public async Task SupportedFieldsUseOnlyTheFixedEntityUpdateCommand()
+    public async Task RepresentableFieldsUseOnlyTheFixedEntityUpdateCommand()
     {
         using var f = new HomeAssistantRegistryTests.Fixture();
         var op = await f.Operation.PrepareAsync(HomeAssistantRegistryTests.Arguments(
-            "{\"area_id\":\"room\",\"labels_add\":[\"new\"],\"labels_remove\":[\"keep\"],\"name\":\"Új\",\"icon\":\"mdi:thermometer\",\"hidden_by\":\"user\",\"disabled_by\":\"user\"}"), default);
+            "{\"area_id\":\"room\",\"labels_add\":[\"new\"],\"labels_remove\":[\"keep\"],\"name\":\"Új\",\"hidden_by\":\"user\",\"disabled_by\":\"user\"}"), default);
         await f.Operation.ExecuteAsync(op, default);
         Assert.Equal(1, f.Writes);
         Assert.Equal("config/entity_registry/update", f.LastUpdate.GetProperty("type").GetString());
         Assert.Equal("room", f.LastUpdate.GetProperty("area_id").GetString());
-        Assert.Equal("mdi:thermometer", f.LastUpdate.GetProperty("icon").GetString());
+        Assert.False(f.LastUpdate.TryGetProperty("icon", out _));
+        Assert.Equal("Új", f.LastUpdate.GetProperty("name").GetString());
         Assert.Equal("user", f.LastUpdate.GetProperty("hidden_by").GetString());
         Assert.Equal("user", f.LastUpdate.GetProperty("disabled_by").GetString());
         Assert.Equal("[\"new\"]", JsonSerializer.Serialize(f.LastUpdate.GetProperty("labels")));

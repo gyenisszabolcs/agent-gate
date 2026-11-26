@@ -27,10 +27,10 @@ namespace AgentGate.Tests;
 public sealed partial class HomeAssistantApprovalChannelTests
 {
     [Theory]
-    [InlineData(RiskLevel.SensitiveControl, "érzékeny vezérlés")]
-    [InlineData(RiskLevel.Configuration, "konfiguráció")]
-    [InlineData(RiskLevel.System, "rendszer")]
-    public async Task RequestPresentationUsesHungarianRiskBudapestTimeAndParameterLines(RiskLevel risk, string label)
+    [InlineData(RiskLevel.SensitiveControl)]
+    [InlineData(RiskLevel.Configuration)]
+    [InlineData(RiskLevel.System)]
+    public async Task RequestPresentationUsesHumanTitleAndBudapestTimeWithoutParameters(RiskLevel risk)
     {
         var clock = new MutableClock { Now = new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero) };
         await using var harness = new Standalone(clock: clock);
@@ -39,9 +39,8 @@ public sealed partial class HomeAssistantApprovalChannelTests
         await harness.Channel.SendRequestAsync(notice, CancellationToken.None);
         using var body = JsonDocument.Parse(harness.Http.Body!);
         var message = body.RootElement.GetProperty("message").GetString()!;
-        Assert.Contains("Kockázat: " + label + "\n", message);
-        Assert.Contains("Lejárat (Europe/Budapest): 13:15", message);
-        Assert.Contains("text: próba\ncount: 2\n", message);
+        Assert.Equal("Jóváhagyás: próba", body.RootElement.GetProperty("title").GetString());
+        Assert.Equal("Kiválasztott eszköz\nMikaela kéri · lejár 13:15", message);
         Assert.DoesNotContain("{", message);
         Assert.Equal(clock.Now.AddMinutes(15), notice.ExpiresAt);
     }
@@ -954,7 +953,9 @@ public sealed partial class HomeAssistantApprovalChannelTests
         Assert.True(!approve.Contains(notice.Id.ToString("N"), StringComparison.Ordinal) && !reject.Contains(notice.Id.ToString("N"), StringComparison.Ordinal), "A kód kérésazonosítóból származik.");
         var message = payload.RootElement.GetProperty("message").GetString()!;
         Assert.True(!message.Contains(app.Secrets.Token, StringComparison.Ordinal) && !message.Contains(approve, StringComparison.Ordinal) && !message.Contains(reject, StringComparison.Ordinal), "Token vagy akciókód az emberi szövegben.");
-        Assert.True(message.Contains("Mikaela", StringComparison.Ordinal) && message.Contains("gate_approval_test", StringComparison.Ordinal) && message.Contains("Kockázat: érzékeny vezérlés", StringComparison.Ordinal), "Hiányos összefoglaló.");
+        Assert.StartsWith("Mikaela kéri · lejár ", message.Split('\n')[1]);
+        Assert.Equal(2, message.Split('\n').Length);
+        Assert.DoesNotContain("gate_approval_test", message);
     }
 
     [Fact]

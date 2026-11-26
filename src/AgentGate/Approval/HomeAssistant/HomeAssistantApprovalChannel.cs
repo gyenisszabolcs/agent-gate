@@ -236,13 +236,12 @@ public sealed class HomeAssistantApprovalChannel(
             deadline.CancelAfter(TimeSpan.FromSeconds(options.TimeoutSeconds));
             var lease = await ReadTokenLeaseAsync(deadline.Token);
             var token = lease.Value;
-            var message = presentation.Request(request, token);
-            message = message.Replace(token, "[REDACTED]", StringComparison.Ordinal);
+            var push = presentation.Format(request, token);
             if (!available) throw new InvalidOperationException();
             await PostAsync(new
             {
-                title = "Gate jóváhagyás",
-                message,
+                title = push.Title,
+                message = push.Message,
                 data = new { actions = new[] { new { action = grant.ApproveCode, title = "Jóváhagyom" }, new { action = grant.RejectCode, title = "Elutasítom" } } }
             }, lease, deadline.Token);
             if (!available) throw new InvalidOperationException();

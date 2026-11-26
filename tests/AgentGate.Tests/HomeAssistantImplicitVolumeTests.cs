@@ -114,12 +114,11 @@ public sealed class HomeAssistantImplicitVolumeTests
         Assert.False(ControlFixture.Failed(pending));
         var notice = Assert.Single(f.Channel.Requests);
         var push = new ApprovalPushFormatter().Request(notice, f.Secrets.Token);
-        Assert.Contains("némításfeloldás", push);
-        Assert.Contains("0.25", push);
-        Assert.Contains("0.3", push);
-        Assert.Contains("bekapcsolás", push);
-        Assert.Contains("nincs kifejezett", push);
-        Assert.Empty(f.Calls);
+        Assert.Equal(2, push.Split('\n').Length);
+        Assert.DoesNotContain("tts.local", push);
+        Assert.Contains("0.25", notice.Summary);
+        Assert.Contains("0.3", notice.Summary);
+        Assert.Equal("GET /api/states/media_player.room", Assert.Single(f.Calls));
         Assert.Equal(ApprovalState.Executed, (await f.Channel.Approve()).State);
         Assert.Equal(3, f.Posts);
 

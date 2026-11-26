@@ -9,7 +9,7 @@ namespace AgentGate.Tests;
 public sealed partial class HomeAssistantApprovalChannelTests
 {
     [Fact]
-    public async Task ActualImplicitTtsPushCarriesRecoveryIntentAndExactConfiguredVolumes()
+    public async Task ActualImplicitTtsPushOmitsTechnicalDetailsKeptInSummary()
     {
         await using var f = new ControlFixture(s => s.AddSingleton(HomeAssistantMediaPlayerTests.Policy()), ["media_player"])
         { Entity = "media_player.room" };
@@ -21,12 +21,12 @@ public sealed partial class HomeAssistantApprovalChannelTests
         await harness.Channel.SendRequestAsync(notice, CancellationToken.None);
         using var body = JsonDocument.Parse(harness.Http.Body!);
         var message = body.RootElement.GetProperty("message").GetString()!;
-        Assert.Contains("nincs kifejezett hangerőkérés", message);
-        Assert.Contains("bekapcsolás", message);
-        Assert.Contains("plafonra csökkentés: 0.6", message);
-        Assert.Contains("némításfeloldás és alap-hangerő: 0.4", message);
-        Assert.Contains("tts.local", message);
+        Assert.Equal(2, message.Split('\n').Length);
+        Assert.Equal("Jóváhagyás: felolvasás", body.RootElement.GetProperty("title").GetString());
+        Assert.DoesNotContain("tts.local", message);
+        Assert.Contains("tts_max_volume", notice.Summary);
+        Assert.Contains("tts_fallback_volume", notice.Summary);
         Assert.Equal(1, harness.Http.Count);
-        Assert.Empty(f.Calls);
+        Assert.Equal("GET /api/states/media_player.room", Assert.Single(f.Calls));
     }
 }
