@@ -58,6 +58,7 @@ public sealed class HomeAssistantAreaTransportTests
         using var fixture = HomeAssistantAreaTests.CreateFixture();
         var normal = fixture.Handler.Respond!;
         var templates = new List<string>();
+        var deviceTemplates = new List<string>();
         fixture.Handler.Respond = async (request, ct) =>
         {
             if (request.RequestUri!.AbsolutePath == "/api/template")
@@ -70,7 +71,9 @@ public sealed class HomeAssistantAreaTransportTests
                 Assert.True(ct.CanBeCanceled);
                 using var document = JsonDocument.Parse(await request.Content.ReadAsStringAsync(ct));
                 Assert.Equal("template", Assert.Single(document.RootElement.EnumerateObject()).Name);
-                templates.Add(document.RootElement.GetProperty("template").GetString()!);
+                var template = document.RootElement.GetProperty("template").GetString()!;
+                if (template.StartsWith("{% set entity_ids = ", StringComparison.Ordinal)) deviceTemplates.Add(template);
+                else templates.Add(template);
             }
             return await normal(request, ct);
         };
@@ -86,6 +89,9 @@ public sealed class HomeAssistantAreaTransportTests
             """;
         Assert.Equal(3, templates.Count);
         Assert.All(templates, template => Assert.Equal(expected, template));
+        Assert.Equal(2, deviceTemplates.Count);
+        Assert.StartsWith("{% set entity_ids = [\"light.desk\"] %}\n", deviceTemplates[0]);
+        Assert.StartsWith("{% set entity_ids = [\"sensor.room\"] %}\n", deviceTemplates[1]);
     }
 
     [Fact]

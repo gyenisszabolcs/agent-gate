@@ -8,7 +8,7 @@ using Microsoft.Extensions.Options;
 
 namespace AgentGate.Approval;
 
-public sealed class ApprovalGate(
+public sealed partial class ApprovalGate(
     IEnumerable<IApprovalChannel> channels,
     IEnumerable<IApprovalOperationHandler> handlers,
     IOptions<AuditOptions> auditOptions,
@@ -26,11 +26,13 @@ public sealed class ApprovalGate(
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         readerHealthy = false;
+        StopStatusWaits(dispose: false);
         await Task.WhenAll(base.StopAsync(cancellationToken), channelWork.StopAsync(cancellationToken));
     }
 
     public override void Dispose()
     {
+        StopStatusWaits(dispose: true);
         channelWork.Dispose();
         base.Dispose();
     }
@@ -55,6 +57,11 @@ public sealed class ApprovalGate(
         {
             using var completion = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await RecordLifecycleAsync(pending, "failed", null, completion.Token);
+            lock (pending.Sync)
+            {
+                failed = new ApprovalOutcome(id, pending.State, pending.Result);
+                pending.PublishStatus();
+            }
             if (channel is not null && !outcomes.Writer.TryWrite(failed))
                 readerHealthy = false;
         }
@@ -65,7 +72,7 @@ public sealed class ApprovalGate(
         if (!requests.TryGetValue(id, out var pending) || !string.Equals(pending.Owner, auditOptions.Value.Caller, StringComparison.Ordinal))
             return null;
         lock (pending.Sync)
-            return new ApprovalOutcome(id, pending.State, pending.Result);
+            return pending.Status;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -141,6 +148,11 @@ public sealed class ApprovalGate(
                     continue;
                 }
                 using var scope = scopes.CreateScope();
+                lock (pending.Sync)
+                {
+                    pending.State = ApprovalState.Approved;
+                    pending.PublishStatus();
+                }
                 var store = scope.ServiceProvider.GetRequiredService<IAuditStore>();
                 var callId = Guid.NewGuid();
                 var auditStarted = false;
@@ -219,8 +231,14 @@ public sealed class ApprovalGate(
         return approvals.TryConsume(permission.Id, hash);
     }
 
-    private Task NotifyAsync(ApprovalOutcome outcome, CancellationToken cancellationToken) => channel is null
-        ? Task.CompletedTask : outcomes.Writer.WriteAsync(outcome, cancellationToken).AsTask();
+    private Task NotifyAsync(ApprovalOutcome outcome, CancellationToken cancellationToken)
+    {
+        // A végállapot csak az összes, még hibázható auditlépés után válik láthatóvá.
+        if (requests.TryGetValue(outcome.Id, out var pending))
+            lock (pending.Sync)
+                pending.PublishStatus();
+        return channel is null ? Task.CompletedTask : outcomes.Writer.WriteAsync(outcome, cancellationToken).AsTask();
+    }
 
     private async Task SendOutcomesAsync(CancellationToken cancellationToken)
     {
@@ -299,7 +317,7 @@ public sealed class ApprovalGate(
             lock (pending.Sync)
             {
                 pending.State = ApprovalState.Failed;
-                pending.Result = "A jóváhagyási audit sikertelen.";
+                pending.Result = "A jóváhagyási audit sikertelen; ez nem visszagörgetés.";
             }
             // Ez új hibaesemény, nem a meghiúsult írás vagy a művelet újrapróbálása.
             if (phase != "failed")
@@ -388,8 +406,19 @@ public sealed class ApprovalGate(
     {
         public object Sync { get; } = new();
         public TaskCompletionSource<bool> Ready { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Changed { get; private set; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public bool Claimed { get; set; }
         public ApprovalState State { get; set; } = ApprovalState.Pending;
         public string? Result { get; set; }
+        public ApprovalOutcome Status { get; private set; } = new(Notice.Id, ApprovalState.Pending, null);
+        // A munkás auditálás közbeni állapota nem publikált végállapot.
+        // A döntés és a végleges eredmény pillanatképe/feliratkozása Sync alatt változik.
+        public void PublishStatus()
+        {
+            Status = new(Notice.Id, State, Result);
+            var previous = Changed;
+            Changed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            previous.TrySetResult();
+        }
     }
 }

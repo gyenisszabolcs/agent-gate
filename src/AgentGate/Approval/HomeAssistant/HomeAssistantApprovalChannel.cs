@@ -326,7 +326,9 @@ public sealed class HomeAssistantApprovalChannel(
         NotificationGrant grant;
         lock (sync)
         {
-            if (!notifications.Remove(outcome.Id, out grant!) || outcome.State == ApprovalState.Pending || !Enum.IsDefined(outcome.State))
+            // A köztes jóváhagyott állapot nem eredmény, az értesítést sem fogyaszthatja el.
+            if (outcome.State is not (ApprovalState.Executed or ApprovalState.Rejected or ApprovalState.Expired or ApprovalState.Failed) ||
+                !notifications.Remove(outcome.Id, out grant!))
                 throw new InvalidOperationException("Az eredményértesítés nem küldhető.");
         }
         try

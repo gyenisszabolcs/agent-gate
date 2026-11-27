@@ -8,15 +8,17 @@ namespace AgentGate.Tools;
 [McpServerToolType]
 public sealed class ApprovalTools
 {
-    [ToolAuditParameters("requestId")]
+    [ToolAuditParameters("requestId", "wait_seconds")]
     [ToolRisk(RiskLevel.Read)]
     [McpServerTool(Name = "gate_approval_status", ReadOnly = true, Destructive = false, OpenWorld = false)]
-    [Description("A konfigurált egyetlen hívó saját jóváhagyási kérésének szűrt állapota.")]
-    public static string Status(string requestId, [Microsoft.AspNetCore.Mvc.FromServices] AgentGate.Approval.ApprovalGate gate,
-        CancellationToken cancellationToken)
+    [Description("A konfigurált hívó saját jóváhagyási kérésének állapota. Jóváhagyási kérés után ezzel várjon a döntésre, és annak megfelelően folytassa. wait_seconds: opcionális egész 0..120, alapérték 0 (azonnali); pozitív értéknél legfeljebb ennyi másodpercet vár a döntésre vagy a végrehajtási eredményre. A jóváhagyás még nem végrehajtási siker: ha az eredményre is szükség van, kérdezze le újra ezt a státuszt. Időtúllépéskor az aktuális állapot tér vissza; új státuszhívást indítson, ne az eredeti műveletet küldje újra. A várakozás sem indít, sem ismétel műveletet.")]
+    public static async Task<string> Status(string requestId, [Microsoft.AspNetCore.Mvc.FromServices] AgentGate.Approval.ApprovalGate gate,
+        CancellationToken cancellationToken,
+        [Description("Jóváhagyáskérés után legfeljebb ennyi másodpercig várjon döntésre vagy eredményre (0–120, alapértelmezett 0), majd a döntés szerint folytassa. A jóváhagyás nem végrehajtási siker: szükség esetén az eredményt is várja meg. Időkorlát után új státuszhívás, nem a művelet újraküldése szükséges.")] int wait_seconds = 0)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (!Guid.TryParseExact(requestId, "D", out var id) || gate.GetStatus(id) is not { } outcome)
+        if (wait_seconds is < 0 or > 120) throw new GateToolException("A wait_seconds csak 0 és 120 közötti egész szám lehet.");
+        if (!Guid.TryParseExact(requestId, "D", out var id) || await gate.GetStatusAsync(id, wait_seconds, cancellationToken) is not { } outcome)
             return "A kérés nem található.";
         return outcome.State switch
         {
@@ -24,6 +26,7 @@ public sealed class ApprovalTools
             AgentGate.Approval.ApprovalState.Failed => "sikertelen: " + outcome.Result,
             AgentGate.Approval.ApprovalState.Rejected => "elutasítva",
             AgentGate.Approval.ApprovalState.Expired => "lejárt",
+            AgentGate.Approval.ApprovalState.Approved => "jóváhagyva; végrehajtásra vagy eredményre várakozik (ez még nem siker)",
             _ => "várakozik"
         };
     }

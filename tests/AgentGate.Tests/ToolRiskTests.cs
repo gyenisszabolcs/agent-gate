@@ -42,7 +42,7 @@ public sealed class ToolRiskTests
         Assert.Equal(RiskLevel.Read, Assert.Single(ping.Metadata.OfType<ToolRiskAttribute>()).Level);
         var status = Assert.Single(tools, tool => tool.ProtocolTool.Name == "gate_approval_status");
         Assert.Equal(RiskLevel.Read, Assert.Single(status.Metadata.OfType<ToolRiskAttribute>()).Level);
-        Assert.Equal(["requestId"], Assert.Single(status.Metadata.OfType<AgentGate.Audit.ToolAuditParametersAttribute>()).Names);
+        Assert.Equal(["requestId", "wait_seconds"], Assert.Single(status.Metadata.OfType<AgentGate.Audit.ToolAuditParametersAttribute>()).Names);
         var approvalTest = Assert.Single(tools, tool => tool.ProtocolTool.Name == "gate_approval_test");
         Assert.Equal(RiskLevel.SensitiveControl, Assert.Single(approvalTest.Metadata.OfType<ToolRiskAttribute>()).Level);
         Assert.Equal(["text"], Assert.Single(approvalTest.Metadata.OfType<AgentGate.Audit.ToolAuditParametersAttribute>()).Names);
