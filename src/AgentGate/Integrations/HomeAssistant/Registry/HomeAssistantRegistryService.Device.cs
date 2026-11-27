@@ -7,7 +7,7 @@ namespace AgentGate.Integrations.HomeAssistant.Registry;
 
 public sealed partial class HomeAssistantRegistryService
 {
-    private async Task<PreparedOperation> PrepareDeviceAsync(IReadOnlyDictionary<string, JsonElement> arguments, CancellationToken ct, bool includePresentation, bool extended = false)
+    private async Task<PreparedOperation> PrepareDeviceAsync(IReadOnlyDictionary<string, JsonElement> arguments, CancellationToken ct, bool includePresentation, bool extended = false, JsonElement? labelCatalog = null)
     {
         policy.RequireDevice();
         var deviceId = RegistryPolicy.Id(arguments["device_id"]);
@@ -33,7 +33,7 @@ public sealed partial class HomeAssistantRegistryService
         var requiredLabels = ((string[])before["labels"]!).Concat((string[])after["labels"]!).ToArray();
         if (requiredLabels.Length != 0)
         {
-            labels = await client.ReadRegistryLabelsAsync(true, ct);
+            labels = labelCatalog ?? await client.ReadRegistryLabelsAsync(true, ct);
             RequireCatalog(labels.Value, "label_id", requiredLabels);
         }
         ApprovalPresentation? presentation = null;
@@ -86,7 +86,7 @@ public sealed partial class HomeAssistantRegistryService
         _ => throw RegistryPolicy.Invalid()
     };
 
-    private async Task ExecuteDeviceAsync(PreparedOperation operation, CancellationToken ct)
+    private async Task ExecuteDeviceAsync(PreparedOperation operation, CancellationToken ct, Func<CancellationToken, Task>? checkCatalog = null)
     {
         if (operation.Parameters.Count != 5 || operation.Parameters.ContainsKey("entity_id")) throw RegistryPolicy.Invalid();
         var arguments = new Dictionary<string, JsonElement>
@@ -107,6 +107,7 @@ public sealed partial class HomeAssistantRegistryService
         {
             // Az írási socket hitelesítése után is teljes policy/catalog/előállapot-ellenőrzés.
             await Revalidate(token);
+            if (checkCatalog is not null) await checkCatalog(token);
             if (await killSwitch.IsEnabledAsync(token)) throw RegistryPolicy.Invalid();
             token.ThrowIfCancellationRequested();
         }, ct);

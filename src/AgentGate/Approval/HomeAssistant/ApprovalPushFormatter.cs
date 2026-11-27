@@ -40,6 +40,7 @@ public sealed partial class ApprovalPushFormatter(Func<TimeZoneInfo>? timeZone =
             var display = request.Presentation ?? throw ApprovalPresentation.CannotDisplay();
             ValidateRegistrySummary(request.Summary, display, token);
             target = display.RegistryLine(token);
+            if (display.Changes.ContainsKey("new_label")) return ("új címke · " + ApprovalPresentation.RequireName(display.TargetName, token), target);
             action = display.Changes.Count == 1 ? display.Changes.Keys.Single() switch
             {
                 "name" or "name_by_user" => "név módosítása", "area_id" => "terület módosítása", "labels" => "címkék módosítása",

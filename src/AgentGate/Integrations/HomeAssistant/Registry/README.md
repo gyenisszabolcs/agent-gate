@@ -1,6 +1,6 @@
 # Home Assistant nyilvántartási műveletek
 
-A modul a meglévő gate jóváhagyási és auditútvonalát használja. Nincs általános websocket-, sablon- vagy HTTP-átjáró, új terület/címke létrehozása vagy törlése, illetve entitásazonosító-átnevezés. Csoportos írás kizárólag a szűk `ha_update_registry` művelettel kérhető.
+A modul a meglévő gate jóváhagyási és auditútvonalát használja. Nincs általános websocket-, sablon- vagy HTTP-átjáró, új terület létrehozása vagy törlése, címkemódosítás/-törlés, illetve entitásazonosító-átnevezés. Címkelétrehozás és csoportos írás kizárólag a szűk `ha_update_registry` művelettel kérhető.
 
 ## Eszközök és bekapcsolás
 
@@ -16,7 +16,7 @@ Példa a `ha_update_registry` argumentumaira:
 {"items":[{"entity_id":"sensor.nappali","patch":{"name":"Nappali érzékelő"}},{"device_id":"device_123","patch":{"name_by_user":"Kerti érzékelő"}}]}
 ```
 
-- Vagy `items`, vagy a meglévő egycélú `entity_id`/`device_id` és `patch` adható meg, együtt soha. Minden tagban pontosan egy konkrét cél és `patch` kötelező; 1–50 tag, azonos cél nem ismételhető. Nincs wildcard, automatikus kiválasztás, új művelet vagy mező. A meglévő mező-, domain- és entitás-engedélyezőlista, tiltólista, eszköz-aktíventitás-vizsgálat és vészleállítás minden tagra érvényes.
+- Vagy `items`, vagy a meglévő egycélú `entity_id`/`device_id` és `patch`, vagy önálló `create_label` adható meg, együtt soha. Egy tag konkrét cél és `patch`, vagy az alább leírt `create_label`; 1–50 tag, a létrehozás is egy tag, azonos cél nem ismételhető. Nincs wildcard vagy automatikus kiválasztás. A meglévő mező-, domain- és entitás-engedélyezőlista, tiltólista, eszköz-aktíventitás-vizsgálat és vészleállítás minden tagra érvényes.
 - A gate minden előállapotot maga olvas. A normalizált célok, sorrend, teljes előállapot, szándék és tényleges változások egyetlen tulajdonoshoz kötött hash részei. Egyetlen, lejáró, egyszer használható jóváhagyás engedi a teljes csomagot; egy részhalmaz külön nem hagyható jóvá.
 - A HA egyetlen tartós értesítésében jelenik meg a teljes, sorszámozott, név és konkrét célazonosító szerinti előtte→utána lista. A rövid push csak a darabszámot, kérőt, lejáratot és a HA értesítéseire utalást tartalmazza. Döntési gomb csak a teljes tartós értesítés sikeres létrehozása után használható. Hiányzó név/részlet, titokgyanús adat, nem megjeleníthető érték vagy túl nagy teljes lista esetén nincs jóváhagyható kérés: bontsd kisebb csomagokra. A teljes részlet rögzített felső korlátja 32 768 UTF-8 byte; nincs csonkítás és nincs új konfigurációs kulcs.
 - A `gate_approval_status(requestId, wait_seconds)` a tulajdonosnak a teljes `items` listát adja a státuszszöveg utáni JSON-ban, a konkrét célokkal, nevekkel, biztonságos előállapot/szándék/változás adatokkal és emberi megjelenítéssel. Az idegen vagy ismeretlen kérés továbbra sem látható. Az egycélú szöveges státusz nem változott. A végállapot csak a csomag- és eredeti audit lezárása után publikálható; a köztes jóváhagyás nem végrehajtási siker.
@@ -26,6 +26,25 @@ Példa a `ha_update_registry` argumentumaira:
 - Ne tegyél ugyanabba a csomagba egymástól függő területmódosításokat: ha az első eszközmódosítás megváltoztatja egy későbbi entitás öröklött előállapotát, a csomag helyesen eltérésnél megáll. Előbb várd meg az első kérés igazolt sikerét, utána kérd a következőt.
 
 A működéshez a meglévő `HomeAssistant` kliens, a Bitwardenben tárolt HA-token, az audit és az írásokhoz a rendelkezésre álló HA-jóváhagyási csatorna szükséges. A telepítési modell a már elfogadott dedikált admin HA-felhasználót használja; a modul nem ad új jogosultságot és nem kér tokent a hívótól. A websocket ugyanabból az ellenőrzött originből származik, mint a kliens: HTTPS→WSS, kizárólag a meglévő explicit privát IPv4 HTTP-kivételnél HTTP→WS. A titkosítatlan kivétel kockázatai változatlanok.
+
+### Új címke, opcionálisan hozzárendeléssel
+
+Önálló példa: `{"create_label":{"name":"Esti fény","icon":"mdi:tag","color":"blue"}}`.
+A név kötelező, legfeljebb 80 karakter; az opcionális ikon legfeljebb 64 karakteres `mdi:` azonosító. A szín HA-témaszín (például `blue`, `red`, `primary`) vagy `#RRGGBB`; tetszőleges CSS, leírás vagy más mező nem adható meg. Az opcionális mezők `null` értéke nem kér tulajdonságot. A név és minden megadott tulajdonság a hash, a diff és az audit része. Az előállapot `null` (nem létező címke), a push címe `Jóváhagyás: új címke · <név>`. Ez is **Configuration**, ugyanazzal a jóváhagyási, tulajdonos-, titokszűrési és vészleállítási védelemmel.
+
+Egy jóváhagyással létrehozás, majd konkrét hozzárendelés:
+
+```json
+{"items":[{"create_label":{"name":"Esti fény"}},{"entity_id":"light.nappali","patch":{"labels_add_created":[0]}}]}
+```
+
+A `labels_add_created` kizárólag csomagon belüli, nulla alapú hivatkozás korábbi `create_label` tagokra; nincs név szerinti keresés. A gate a hivatkozást az adott create hash-éhez köti, és csak annak validált HA-válaszából kapott azonosítóra oldja fel. Előre-, ön-, nem létező és ismételt referencia elutasított. Entitásnál a meglévő címkék megmaradnak; eszköznél a `labels` továbbra is teljes kívánt lista, ehhez adódnak az új hivatkozások (például `{"device_id":"device_123","patch":{"labels":["megtartott_id"],"labels_add_created":[0]}}`). Azonos cél csak egyszer szerepelhet. A belső `gate_pending_` névtér nem használható bemeneti címkeazonosítóként. A teljes lista és függőség a szokásos HA tartós értesítésben/státuszban látszik; a rövid csomagpush változatlan.
+
+A névütközés kulcsa NFC-normalizálás, Unicode 17.0 teljes (C/F) case folding, majd az ASCII szóközök elhagyása; a beküldött nevet NFC alakban kötjük és küldjük. Ez a HA 2026.11.0 `casefold().replace(" ", "")` ellenőrzésénél az NFC miatt szigorúbb, nem homográfszűrés. Ütközést előkészítéskor, végrehajtáskor és az írási socket hitelesítése után is vizsgálunk. A katalógus azonosító/név/ikon/szín/leírás vetülete is rögzített; kizárólag a saját, igazolt create helyőrzőjének feloldása megengedett, idegen változás nem kap felmentést.
+
+A [HA create API](https://github.com/home-assistant/core/blob/2026.11.0/homeassistant/components/config/label_registry.py) nem kínál elvárt katalógusverzióhoz kötött CAS-t vagy csomagtranzakciót. A külső íróval szembeni versenyablak megmarad; elveszett/hibás create-válasz után nincs hozzárendelés, retry vagy rollback. A már létrehozott címke részleges sikerben megmarad. A validált ID külön auditsorban szerepel közös `requestId`, create-hash és csomagpozíció korrelációval, régi címkeérték nélkül. Bizonytalan hatás után előbb kézi HA-ellenőrzés, majd szükség esetén új kérés kell.
+
+Élesítés: a címkelétrehozás nem vezet be új konfigurációs kulcsot, titkot, függőséget vagy jogosultságot. A meglévő `/etc/agentgate/agentgate.json` `HomeAssistantRegistry:Enabled=true` engedélyezi; a domainengedélyezés a hozzárendelésekhez változatlanul szükséges. Már engedélyezett registry esetén nincs konfigurációs teendő. A szokásos jóváhagyott merge utáni telepítés és a gate szolgáltatás újraindítása tölti be az új kódot; ezt a PR nem hajtja végre.
 
 ### Új konfigurációs kulcsok
 

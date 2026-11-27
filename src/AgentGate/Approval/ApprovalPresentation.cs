@@ -44,6 +44,12 @@ public sealed class ApprovalPresentation(string? targetName, IReadOnlyDictionary
 
     public string RegistryLine(string token = "", bool extended = false)
     {
+        if (Changes.ContainsKey("new_label"))
+        {
+            var creation = Integrations.HomeAssistant.Registry.LabelCreation.Display(this, token);
+            if (!extended && new StringInfo(creation).LengthInTextElements > 160) throw CannotDisplay();
+            return creation;
+        }
         if (Changes.Count == 0) throw CannotDisplay();
         var parts = Changes.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair =>
         {

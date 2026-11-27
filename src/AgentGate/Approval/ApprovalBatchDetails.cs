@@ -22,7 +22,8 @@ internal static class ApprovalBatchDetails
             var safe = SecretRedactor.RedactParameters(member);
             if (member.Any(pair => !safe.TryGetValue(pair.Key, out var value) || value != pair.Value || SecretRedactor.RedactText(pair.Value) != pair.Value))
                 throw ApprovalPresentation.CannotDisplay();
-            var target = member.GetValueOrDefault("entity_id") ?? member.GetValueOrDefault("device_id") ?? throw ApprovalPresentation.CannotDisplay();
+            var target = member.GetValueOrDefault("entity_id") ?? member.GetValueOrDefault("device_id") ??
+                (member.ContainsKey("create_label") ? "új címke" : throw ApprovalPresentation.CannotDisplay());
             result.Add(new(index + 1, target, ApprovalPresentation.RequireName(displays[index].TargetName),
                 member.ToFrozenDictionary(StringComparer.Ordinal), displays[index]));
         }

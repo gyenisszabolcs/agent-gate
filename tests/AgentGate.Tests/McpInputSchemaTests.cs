@@ -58,6 +58,9 @@ public sealed class McpInputSchemaTests
                 // A patch/items alternatíva is publikációs kiegészítés; az SDK-példányt nem írja át.
                 expected["inputSchema"]!["properties"]!.AsObject().Remove("items");
                 actual["inputSchema"]!["properties"]!.AsObject().Remove("items");
+                expected["inputSchema"]!["properties"]!.AsObject().Remove("create_label");
+                actual["inputSchema"]!["properties"]!.AsObject().Remove("create_label");
+                actual["inputSchema"]!.AsObject().Remove("oneOf");
                 expected["inputSchema"]!.AsObject().Remove("required");
                 actual["inputSchema"]!.AsObject().Remove("required");
             }
@@ -89,7 +92,10 @@ public sealed class McpInputSchemaTests
         Assert.Contains("minden tag külön policy-ellenőrzést", description);
         Assert.Contains("Egy közös, egyszer használható, lejáró jóváhagyás", description);
         Assert.Contains("nincs rollback/retry", description);
-        var exampleStart = description.IndexOf('{');
+        Assert.Contains("önálló create_label", description);
+        Assert.Contains("patch.labels_add_created", description);
+        Assert.Contains("validált HA-válasz-ID", description);
+        var exampleStart = description.IndexOf("{\"entity_id\":\"light.yeelight_nappali\"", StringComparison.Ordinal);
         var exampleEnd = description.IndexOf("}}", exampleStart, StringComparison.Ordinal) + 2;
         using var example = JsonDocument.Parse(description[exampleStart..exampleEnd]);
         Assert.Equal("light.yeelight_nappali", example.RootElement.GetProperty("entity_id").GetString());
@@ -104,9 +110,17 @@ public sealed class McpInputSchemaTests
         Assert.Equal(50, items.GetProperty("maxItems").GetInt32());
         var member = items.GetProperty("items");
         Assert.Equal("object", member.GetProperty("type").GetString());
-        Assert.Equal("patch", Assert.Single(member.GetProperty("required").EnumerateArray()).GetString());
+        Assert.Equal(3, member.GetProperty("oneOf").GetArrayLength());
         Assert.Empty(member.GetProperty("additionalProperties").GetProperty("not").EnumerateObject());
-        Assert.Equal(new[] { "device_id", "entity_id", "patch" }, member.GetProperty("properties").EnumerateObject().Select(field => field.Name).Order(StringComparer.Ordinal));
+        Assert.Equal(new[] { "create_label", "device_id", "entity_id", "patch" }, member.GetProperty("properties").EnumerateObject().Select(field => field.Name).Order(StringComparer.Ordinal));
+        Assert.Equal(4, input.GetProperty("oneOf").GetArrayLength());
+        var createLabel = input.GetProperty("properties").GetProperty("create_label");
+        Assert.Equal("name", Assert.Single(createLabel.GetProperty("required").EnumerateArray()).GetString());
+        Assert.Equal(new[] { "color", "icon", "name" }, createLabel.GetProperty("properties").EnumerateObject().Select(field => field.Name).Order(StringComparer.Ordinal));
+        Assert.Empty(createLabel.GetProperty("additionalProperties").GetProperty("not").EnumerateObject());
+        var createdReferences = member.GetProperty("properties").GetProperty("patch").GetProperty("properties").GetProperty("labels_add_created");
+        Assert.Equal("integer", createdReferences.GetProperty("items").GetProperty("type").GetString());
+        Assert.False(input.GetProperty("properties").GetProperty("patch").GetProperty("properties").TryGetProperty("labels_add_created", out _));
         var patch = input.GetProperty("properties").GetProperty("patch");
         Assert.Equal("object", patch.GetProperty("type").GetString());
         Assert.Equal(1, patch.GetProperty("minProperties").GetInt32());

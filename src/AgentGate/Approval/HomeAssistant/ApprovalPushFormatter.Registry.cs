@@ -15,10 +15,17 @@ public sealed partial class ApprovalPushFormatter
             using var document = JsonDocument.Parse(summary);
             var root = document.RootElement;
             RegistrySocket.ValidateUnique(root);
+            if (root.TryGetProperty("create_label", out _))
+            {
+                ValidateLabelCreation(root, display, token);
+                return;
+            }
             var deviceTarget = root.TryGetProperty("device_id", out var deviceId);
             var targetField = deviceTarget ? "device_id" : "entity_id";
-            if (root.EnumerateObject().Count() != 5 || root.EnumerateObject().Any(field =>
-                field.Name != targetField && field.Name is not ("patch" or "before" or "after" or "changes"))) throw InvalidSummary();
+            var hasReferences = extended && root.TryGetProperty("label_refs", out _);
+            if (root.EnumerateObject().Count() != (hasReferences ? 7 : 5) || root.EnumerateObject().Any(field =>
+                field.Name != targetField && field.Name is not ("patch" or "before" or "after" or "changes") &&
+                !(hasReferences && field.Name is "label_refs" or "label_catalog"))) throw InvalidSummary();
             var target = Text(root, targetField);
             if (deviceTarget) _ = RegistryPolicy.Id(deviceId);
             else if (!ControlPolicy.CanonicalEntity(target)) throw InvalidSummary();
@@ -54,5 +61,27 @@ public sealed partial class ApprovalPushFormatter
             }
         }
         catch (Exception) { throw InvalidSummary(); }
+    }
+
+    private static void ValidateLabelCreation(JsonElement root, ApprovalPresentation display, string token)
+    {
+        if (root.EnumerateObject().Count() != 5 || root.EnumerateObject().Any(p => p.Name is not ("create_label" or "before" or "after" or "changes" or "label_catalog")) || Text(root, "before") != "null") throw InvalidSummary();
+        using var intent = JsonDocument.Parse(Text(root, "create_label"));
+        var expected = LabelCreation.Intent(intent.RootElement);
+        var canonical = JsonSerializer.Serialize(expected);
+        if (Text(root, "create_label") != canonical || Text(root, "after") != canonical || Text(root, "changes") != canonical ||
+            display.TargetName != (string)expected["name"]!) throw InvalidSummary();
+        using var catalog = JsonDocument.Parse(Text(root, "label_catalog"));
+        _ = LabelCreation.Catalog(catalog.RootElement);
+        LabelCreation.RequireAbsent(catalog.RootElement, display.TargetName!);
+        foreach (var field in new[] { "icon", "color" })
+        {
+            if (expected[field] is string value)
+            {
+                if (!display.Changes.TryGetValue(field, out var change) || change.After != value) throw InvalidSummary();
+            }
+            else if (display.Changes.ContainsKey(field)) throw InvalidSummary();
+        }
+        _ = LabelCreation.Display(display, token);
     }
 }

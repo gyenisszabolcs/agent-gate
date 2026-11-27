@@ -12,10 +12,11 @@ public sealed partial class HomeAssistantRegistryService(HomeAssistantClient? co
     public Task<PreparedOperation> PrepareAsync(IReadOnlyDictionary<string, JsonElement> arguments, CancellationToken ct) =>
         arguments.ContainsKey("items") ? PrepareBatchAsync(arguments, ct) : PrepareCoreAsync(arguments, ct, true);
 
-    private async Task<PreparedOperation> PrepareCoreAsync(IReadOnlyDictionary<string, JsonElement> arguments, CancellationToken ct, bool includePresentation, bool extended = false)
+    private async Task<PreparedOperation> PrepareCoreAsync(IReadOnlyDictionary<string, JsonElement> arguments, CancellationToken ct, bool includePresentation, bool extended = false, JsonElement? labelCatalog = null)
     {
         ValidateArguments(arguments);
-        if (arguments.ContainsKey("device_id")) return await PrepareDeviceAsync(arguments, ct, includePresentation, extended);
+        if (arguments.ContainsKey("create_label")) return await PrepareCreateAsync(arguments["create_label"], ct, labelCatalog);
+        if (arguments.ContainsKey("device_id")) return await PrepareDeviceAsync(arguments, ct, includePresentation, extended, labelCatalog);
         var entityId = arguments["entity_id"].GetString()!;
         policy.RequireEntity(client, entityId);
         var patch = RegistryPolicy.Patch(arguments["patch"]);
@@ -49,7 +50,7 @@ public sealed partial class HomeAssistantRegistryService(HomeAssistantClient? co
         }
         if (add.Length + remove.Length > 0 || changes.ContainsKey("labels"))
         {
-            labelsCatalog = await client.ReadRegistryLabelsAsync(true, ct);
+            labelsCatalog = labelCatalog ?? await client.ReadRegistryLabelsAsync(true, ct);
             RequireCatalog(labelsCatalog.Value, "label_id", add.Concat(remove).Concat((string[])after["labels"]!));
         }
         ApprovalPresentation? presentation = null;
@@ -80,11 +81,19 @@ public sealed partial class HomeAssistantRegistryService(HomeAssistantClient? co
     }
 
     public async Task ExecuteAsync(PreparedOperation operation, CancellationToken ct)
+        => await ExecuteCoreAsync(operation, ct);
+
+    private async Task ExecuteCoreAsync(PreparedOperation operation, CancellationToken ct, Func<CancellationToken, Task>? checkCatalog = null)
     {
         if (operation.Tool != HomeAssistantRegistryOperation.ToolName || operation.Risk != RiskLevel.Configuration) throw RegistryPolicy.Invalid();
+        if (operation.Parameters.ContainsKey("create_label"))
+        {
+            _ = await ExecuteCreateAsync(operation, ct);
+            return;
+        }
         if (operation.Parameters.ContainsKey("device_id"))
         {
-            await ExecuteDeviceAsync(operation, ct);
+            await ExecuteDeviceAsync(operation, ct, checkCatalog);
             return;
         }
         var entityId = operation.Parameters["entity_id"]!;
@@ -102,21 +111,29 @@ public sealed partial class HomeAssistantRegistryService(HomeAssistantClient? co
             // Ez szándékosan best-effort; a standard HA update nem nyújt atomi CAS-t.
             var immediate = await ReadSnapshotAsync(entityId, patch.RootElement, token);
             if (JsonSerializer.Serialize(immediate) != operation.Parameters["before"]) throw new RegistryPrestateChangedException();
+            if (checkCatalog is not null) await checkCatalog(token);
             policy.RequireEntity(client, entityId);
             if (await killSwitch.IsEnabledAsync(token)) throw RegistryPolicy.Invalid();
             token.ThrowIfCancellationRequested();
         }, ct);
     }
 
-    internal static void ValidateArguments(IReadOnlyDictionary<string, JsonElement> arguments)
+    internal static void ValidateArguments(IReadOnlyDictionary<string, JsonElement> arguments, bool batch = false)
     {
         if (arguments.ContainsKey("items"))
         {
             _ = BatchArguments(arguments);
             return;
         }
+        if (arguments.TryGetValue("create_label", out var creation))
+        {
+            if (arguments.Count != 1) throw RegistryPolicy.Invalid();
+            _ = LabelCreation.Intent(creation);
+            return;
+        }
         if (arguments.Keys.Any(key => key is not ("entity_id" or "device_id" or "patch")) || arguments.Count != 2 ||
             !arguments.TryGetValue("patch", out var patch)) throw RegistryPolicy.Invalid();
+        if (batch) patch = LabelCreation.Patch(patch, arguments.ContainsKey("device_id"));
         if (arguments.TryGetValue("device_id", out var device))
         {
             _ = RegistryPolicy.Id(device);
@@ -221,9 +238,11 @@ public sealed class HomeAssistantRegistryOperation(HomeAssistantRegistryService 
     public RiskLevel Risk => RiskLevel.Configuration;
     public ValueTask<PreparedOperation> PrepareAsync(IReadOnlyDictionary<string, JsonElement> arguments, CancellationToken cancellationToken) => new(service.PrepareAsync(arguments, cancellationToken));
     public Task<string> ExecuteAsync(PreparedOperation operation, ApprovalExecutionContext context, CancellationToken cancellationToken) =>
-        operation.Parameters.ContainsKey("items") ? service.ExecuteBatchAsync(operation, context, cancellationToken) : ExecuteAsync(operation, cancellationToken);
+        operation.Parameters.ContainsKey("items") ? service.ExecuteBatchAsync(operation, context, cancellationToken) :
+        operation.Parameters.ContainsKey("create_label") ? service.ExecuteStandaloneCreateAsync(operation, context, cancellationToken) : ExecuteAsync(operation, cancellationToken);
     public async Task<string> ExecuteAsync(PreparedOperation operation, CancellationToken cancellationToken)
     {
+        if (operation.Parameters.ContainsKey("create_label")) return await service.ExecuteStandaloneCreateAsync(operation, null, cancellationToken);
         await service.ExecuteAsync(operation, cancellationToken);
         return "A Home Assistant nyilvántartási módosítás elkészült.";
     }
