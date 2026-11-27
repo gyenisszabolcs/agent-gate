@@ -163,8 +163,11 @@ public sealed partial class HomeAssistantRegistryService(HomeAssistantClient? co
         // Az API original_name mezője már az unprefixed nevet tartalmazza, ha van.
         // Nincs state-függőség: a disabled, állapot nélküli entitás is kezelhető.
         var entityName = DisplayText(source, "name") ?? DisplayText(source, "original_name_unprefixed") ?? DisplayText(source, "original_name");
-        var name = string.Join(" ", new[] { deviceName, entityName }.Where(part => !string.IsNullOrEmpty(part)));
-        return name.Length == 0 ? null : name;
+        // Az érvényes másik komponens nem teheti elfogadhatóvá az érvénytelen nevet.
+        if (deviceName is not null) _ = ApprovalPresentation.RequireName(deviceName);
+        if (entityName is not null) _ = ApprovalPresentation.RequireName(entityName);
+        if (deviceName is null && entityName is null) return null;
+        return ApprovalPresentation.RequireName(deviceName is null ? entityName : entityName is null ? deviceName : $"{deviceName} {entityName}");
     }
 
     internal static string? DisplayText(JsonElement source, string key) =>

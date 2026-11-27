@@ -97,6 +97,29 @@ public sealed class HomeAssistantRegistryDisplayNameTests
     }
 
     [Theory]
+    [InlineData("Szoba", "0123456789abcdef", null, ApprovalPresentation.InvalidNameMessage)]
+    [InlineData("0123456789abcdef", "Hőmérő", null, ApprovalPresentation.InvalidNameMessage)]
+    [InlineData("Szoba", "", null, ApprovalPresentation.InvalidNameMessage)]
+    [InlineData("Szoba", "Hőmérő", "", ApprovalPresentation.InvalidNameMessage)]
+    [InlineData("Huszonöt betűs eszköznév", "Huszonöt betűs entitásnév ma", null, ApprovalPresentation.LongNameMessage)]
+    public async Task EveryNameComponentAndCombinedNameMustPassValidation(string deviceName, string entityName,
+        string? deviceUserName, string expectedMessage)
+    {
+        using var fixture = new HomeAssistantRegistryTests.Fixture
+        {
+            Name = null, OriginalName = entityName, Device = "device",
+            DeviceName = deviceName, DeviceNameByUser = deviceUserName
+        };
+        var arguments = HomeAssistantRegistryTests.Arguments("{\"labels_add\":[\"new\"]}");
+        var single = await Assert.ThrowsAsync<GateToolException>(async () => await fixture.Operation.PrepareAsync(arguments, default));
+        var batch = await Assert.ThrowsAsync<GateToolException>(async () =>
+            await fixture.Operation.PrepareAsync(HomeAssistantRegistryBatchTests.Batch(arguments), default));
+        Assert.Equal(expectedMessage, single.Message);
+        Assert.Equal(expectedMessage, batch.Message);
+        Assert.Equal(0, fixture.Writes);
+    }
+
+    [Theory]
     [InlineData("42")]
     [InlineData("[]")]
     [InlineData("{}")]

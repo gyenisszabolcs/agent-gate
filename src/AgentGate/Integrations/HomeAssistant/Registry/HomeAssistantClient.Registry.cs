@@ -46,7 +46,7 @@ public sealed partial class HomeAssistantClient
         }
         if (!areas.TryGetValue(deviceId, out var result)) throw RegistryPolicy.Invalid();
         var name = includePresentation ? HomeAssistantRegistryService.DisplayText(selected, "name_by_user") : null;
-        if (includePresentation && string.IsNullOrEmpty(name)) name = HomeAssistantRegistryService.DisplayText(selected, "name");
+        if (includePresentation) name ??= HomeAssistantRegistryService.DisplayText(selected, "name");
         return (result, name);
     }
 
