@@ -18,9 +18,16 @@ public sealed partial class HomeAssistantRegistryService
             RegistrySocket.ValidateUnique(item);
             if (item.ValueKind != JsonValueKind.Object || item.TryGetProperty("items", out _)) throw RegistryPolicy.Invalid();
             var member = item.EnumerateObject().ToDictionary(field => field.Name, field => field.Value.Clone(), StringComparer.Ordinal);
-            ValidateArguments(member);
-            var kind = member.ContainsKey("device_id") ? "device_id" : "entity_id";
-            if (!targets.Add(kind + ":" + member[kind].GetString())) throw RegistryPolicy.Invalid();
+            ValidateArguments(member, batch: true);
+            if (!member.ContainsKey("create_label"))
+            {
+                var kind = member.ContainsKey("device_id") ? "device_id" : "entity_id";
+                if (!targets.Add(kind + ":" + member[kind].GetString())) throw RegistryPolicy.Invalid();
+                foreach (var index in LabelCreation.References(member["patch"]))
+                    if (index >= result.Count || !result[index].ContainsKey("create_label")) throw RegistryPolicy.Invalid();
+                foreach (var field in new[] { "labels", "labels_add", "labels_remove" })
+                    if (member["patch"].TryGetProperty(field, out var ids) && RegistryPolicy.Ids(ids).Any(id => id.StartsWith("gate_pending_", StringComparison.Ordinal))) throw RegistryPolicy.Invalid();
+            }
             result.Add(member);
         }
         return result;
@@ -29,10 +36,35 @@ public sealed partial class HomeAssistantRegistryService
     private async Task<PreparedOperation> PrepareBatchAsync(IReadOnlyDictionary<string, JsonElement> arguments, CancellationToken ct)
     {
         var members = new List<PreparedOperation>();
-        foreach (var item in BatchArguments(arguments))
+        var inputs = BatchArguments(arguments);
+        JsonElement? catalog = null;
+        if (inputs.Any(item => item.ContainsKey("create_label")))
+        {
+            catalog = LabelCreation.Catalog(await client.ReadRegistryLabelsAsync(true, ct));
+            if (catalog.Value.EnumerateArray().Any(row => row.GetProperty("label_id").GetString()!.StartsWith("gate_pending_", StringComparison.Ordinal))) throw RegistryPolicy.Invalid();
+        }
+        foreach (var item in inputs)
         {
             ct.ThrowIfCancellationRequested();
-            members.Add(await PrepareCoreAsync(item, ct, true, extended: true));
+            var argumentsForMember = new Dictionary<string, JsonElement>(item, StringComparer.Ordinal);
+            var refs = item.TryGetValue("patch", out var patch) ? LabelCreation.References(patch) : [];
+            if (refs.Length > 0) argumentsForMember["patch"] = LabelCreation.Patch(patch, item.ContainsKey("device_id"));
+            var member = await PrepareCoreAsync(argumentsForMember, ct, true, extended: true, labelCatalog: catalog);
+            if (catalog is not null && !item.ContainsKey("create_label"))
+            {
+                var parametersForMember = member.Parameters.ToDictionary(pair => pair.Key, pair => pair.Value);
+                parametersForMember["label_catalog"] = catalog.Value.GetRawText();
+                parametersForMember["label_refs"] = JsonSerializer.Serialize(refs.Select(index => new LabelBinding(index, members[index].ComputeHash(""), LabelCreation.Placeholder(index))));
+                member = new(member.Tool, member.Risk, parametersForMember, requiresLosslessAudit: true, presentation: member.Presentation);
+            }
+            members.Add(member);
+            if (item.TryGetValue("create_label", out var creation))
+            {
+                var row = LabelCreation.Intent(creation);
+                row.Add("label_id", LabelCreation.Placeholder(members.Count - 1));
+                row.Add("description", null);
+                catalog = LabelCreation.Catalog(JsonSerializer.SerializeToElement(catalog!.Value.EnumerateArray().Append(JsonSerializer.SerializeToElement(row))));
+            }
         }
         var parameters = new Dictionary<string, string?> { ["items"] = JsonSerializer.Serialize(members.Select(member => member.Parameters)) };
         // Ugyanaz a veszteségmentes titokszűrés: a nagy csomagot sem csonkítjuk.

@@ -48,6 +48,13 @@ public sealed partial class HomeAssistantClient
     internal Task<JsonElement> ReadRegistryLabelsAsync(bool lossless, CancellationToken ct) => RegistrySocket.CallAsync(logSockets, http.BaseAddress!, secrets, secretId, timeout,
         new Dictionary<string, object?> { ["id"] = 1, ["type"] = "config/label_registry/list" }, null, lossless, ct);
 
+    internal Task<JsonElement> CreateRegistryLabelAsync(JsonElement intent, Func<CancellationToken, Task> beforeSend, CancellationToken ct)
+    {
+        var command = new Dictionary<string, object?> { ["id"] = 1, ["type"] = "config/label_registry/create" };
+        foreach (var field in intent.EnumerateObject()) command.Add(field.Name, field.Value.Clone());
+        return RegistrySocket.CallAsync(logSockets, http.BaseAddress!, secrets, secretId, timeout, command, intent, true, ct, beforeSend);
+    }
+
     internal async Task UpdateRegistryEntityAsync(string entityId, JsonElement changes, Func<CancellationToken, Task> beforeSend, CancellationToken ct)
     {
         RequireRegistryEntity(entityId);

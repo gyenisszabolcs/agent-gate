@@ -11,6 +11,7 @@ public sealed partial class HomeAssistantRegistryService
     public async Task<string> ExecuteBatchAsync(PreparedOperation operation, ApprovalExecutionContext context, CancellationToken ct)
     {
         var members = BatchMembers(operation);
+        var created = new Dictionary<int, CreatedBatchLabel>();
         var completed = 0;
         foreach (var member in members)
         {
@@ -29,7 +30,12 @@ public sealed partial class HomeAssistantRegistryService
                 auditStarted = true;
                 effectStarted = true;
                 // Az egycélú útvonal ellenőrzi a policy-t, a teljes előállapotot és az írás előtti kill/cancel állapotot.
-                await ExecuteAsync(member, ct);
+                var result = await ExecuteBatchMemberAsync(member, created, ct);
+                if (result is { } label)
+                {
+                    await AuditCreatedLabelAsync(member, label, context, completed + 1);
+                    created.Add(completed, new(member, label));
+                }
                 ct.ThrowIfCancellationRequested();
                 completionAttempted = true;
                 using var completion = new CancellationTokenSource(TimeSpan.FromSeconds(5));

@@ -24,7 +24,8 @@ public sealed partial class ApprovalPushFormatter
             {
                 var display = displays[index++];
                 ValidateRegistrySummary(member.GetRawText(), display, token, extended: true);
-                var target = member.TryGetProperty("device_id", out var device) ? device.GetString()! : Text(member, "entity_id");
+                var target = member.TryGetProperty("create_label", out _) ? "új címke" :
+                    member.TryGetProperty("device_id", out var device) ? device.GetString()! : Text(member, "entity_id");
                 lines.Add($"{index}. {display.RegistryLine(token, extended: true)} ({target})");
             }
             lines.Add("Rögzített sorrend; az első hibánál leáll. Nincs visszagörgetés vagy újrapróbálás. Írás előtt újraellenőrzés; nem atomi védelem.");

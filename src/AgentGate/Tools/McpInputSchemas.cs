@@ -28,6 +28,18 @@ internal static class McpInputSchemas
         }
         """));
 
+    private static readonly JsonElement CreateLabel = JsonSerializer.SerializeToElement(JsonNode.Parse("""
+        {
+          "type": "object", "required": ["name"], "additionalProperties": { "not": {} },
+          "description": "Új címke; nincs címkemódosítás vagy -törlés. A névütközés tiltott; Configuration, gate-jóváhagyással.",
+          "properties": {
+            "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+            "icon": { "type": ["string", "null"], "pattern": "^mdi:[a-z0-9-]+$", "maxLength": 64 },
+            "color": { "type": ["string", "null"], "description": "HA témaszín (például blue) vagy #RRGGBB; tetszőleges CSS tiltott." }
+          }
+        }
+        """));
+
     private static readonly JsonElement ControlData = JsonSerializer.SerializeToElement(JsonNode.Parse("""
         {
           "type": ["object", "null"],
@@ -65,6 +77,11 @@ internal static class McpInputSchemas
             : JsonNode.Parse((parameter == "patch" ? Patch : ControlData).GetRawText());
         if (tool.Name == "ha_update_registry")
         {
+            schema["properties"]!["create_label"] = JsonNode.Parse(CreateLabel.GetRawText());
+            var batchPatch = JsonNode.Parse(Patch.GetRawText())!;
+            batchPatch["properties"]!["labels_add_created"] = JsonNode.Parse("""
+                {"type":"array","minItems":1,"maxItems":16,"uniqueItems":true,"items":{"type":"integer","minimum":0,"maximum":49},"description":"Korábbi create_label tag 0-tól számozott items indexe, nem név/ID. Entitásnál hozzáadás; eszköznél a labels teljes listáját egészíti ki."}
+                """);
             var member = new JsonObject
             {
                 ["type"] = "object",
@@ -72,16 +89,31 @@ internal static class McpInputSchemas
                 {
                     ["entity_id"] = schema["properties"]!["entity_id"]!.DeepClone(),
                     ["device_id"] = schema["properties"]!["device_id"]!.DeepClone(),
-                    ["patch"] = JsonNode.Parse(Patch.GetRawText())
+                    ["patch"] = batchPatch,
+                    ["create_label"] = JsonNode.Parse(CreateLabel.GetRawText())
                 },
-                ["required"] = new JsonArray("patch"),
+                ["oneOf"] = JsonNode.Parse("""
+                    [
+                      {"required":["entity_id","patch"],"not":{"anyOf":[{"required":["device_id"]},{"required":["create_label"]}]}},
+                      {"required":["device_id","patch"],"not":{"anyOf":[{"required":["entity_id"]},{"required":["create_label"]}]}},
+                      {"required":["create_label"],"not":{"anyOf":[{"required":["entity_id"]},{"required":["device_id"]},{"required":["patch"]}]}}
+                    ]
+                    """),
                 ["additionalProperties"] = JsonNode.Parse("""{"not":{}}""")
             };
             schema["properties"]!["items"] = new JsonObject
             {
                 ["type"] = "array", ["minItems"] = 1, ["maxItems"] = 50, ["items"] = member,
-                ["description"] = "Rögzített sorrendű, legfeljebb 50 konkrét entitás/eszköz. Kizárólag items vagy egycélú entity_id/device_id és patch. Egy közös jóváhagyás, teljes HA értesítés, első hibánál stop; nincs rollback/retry. Azonos cél csak egyszer szerepelhet."
+                ["description"] = "Rögzített sorrendű, legfeljebb 50 entitás/eszköz/create_label tag. Kizárólag items vagy egycélú mód. Egy közös jóváhagyás, teljes HA értesítés, első hibánál stop; nincs rollback/retry. Azonos cél csak egyszer szerepelhet."
             };
+            schema["oneOf"] = JsonNode.Parse("""
+                [
+                  {"required":["entity_id","patch"],"not":{"anyOf":[{"required":["device_id"]},{"required":["create_label"]},{"required":["items"]}]}},
+                  {"required":["device_id","patch"],"not":{"anyOf":[{"required":["entity_id"]},{"required":["create_label"]},{"required":["items"]}]}},
+                  {"required":["create_label"],"not":{"anyOf":[{"required":["entity_id"]},{"required":["device_id"]},{"required":["patch"]},{"required":["items"]}]}},
+                  {"required":["items"],"not":{"anyOf":[{"required":["entity_id"]},{"required":["device_id"]},{"required":["patch"]},{"required":["create_label"]}]}}
+                ]
+                """);
             // A célkizárásokat a nyers bemeneten a RegistryPolicy is kötelezően ellenőrzi.
             schema["required"] = new JsonArray();
         }
