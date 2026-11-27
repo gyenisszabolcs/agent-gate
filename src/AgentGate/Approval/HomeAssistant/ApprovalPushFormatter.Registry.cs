@@ -7,7 +7,7 @@ namespace AgentGate.Approval.HomeAssistant;
 
 public sealed partial class ApprovalPushFormatter
 {
-    private static void ValidateRegistrySummary(string summary, ApprovalPresentation display, string token)
+    private static void ValidateRegistrySummary(string summary, ApprovalPresentation display, string token, bool extended = false)
     {
         try
         {
@@ -43,7 +43,7 @@ public sealed partial class ApprovalPushFormatter
             if (lines.Count == 2) throw InvalidSummary();
             lines.Add("Írás előtt újraellenőrzés; nem atomi védelem.");
             var details = string.Join('\n', lines);
-            if (Encoding.UTF8.GetByteCount(details) > 2800) throw InvalidSummary();
+            if (Encoding.UTF8.GetByteCount(details) > (extended ? 32_768 : 2800)) throw InvalidSummary();
 
             string Display(JsonElement value)
             {

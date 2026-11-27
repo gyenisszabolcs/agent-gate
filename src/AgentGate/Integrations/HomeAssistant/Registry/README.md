@@ -1,12 +1,29 @@
 # Home Assistant nyilvántartási műveletek
 
-A modul a meglévő gate jóváhagyási és auditútvonalát használja. Nincs általános websocket-, sablon- vagy HTTP-átjáró, csoportos módosítás, új terület/címke létrehozása vagy törlése, illetve entitásazonosító-átnevezés.
+A modul a meglévő gate jóváhagyási és auditútvonalát használja. Nincs általános websocket-, sablon- vagy HTTP-átjáró, új terület/címke létrehozása vagy törlése, illetve entitásazonosító-átnevezés. Csoportos írás kizárólag a szűk `ha_update_registry` művelettel kérhető.
 
 ## Eszközök és bekapcsolás
 
-- `ha_update_registry(patch, entity_id vagy device_id)`: pontosan egy entitás vagy eszköz nyilvántartási metaadatai, **Configuration** kockázattal. Minden írás külön, egyszer használható és lejáró, HA pushos gate-jóváhagyáshoz kötött. Az MCP-eszköz közvetlen metódusa nem végez írást.
+- `ha_update_registry(patch, entity_id vagy device_id)`: egy entitás vagy eszköz nyilvántartási metaadatai, **Configuration** kockázattal. A meglévő egycélú API változatlan; alternatív `items` bemenettel 1–50 konkrét cél egy csomagba fogható az alábbi szabályok szerint. Minden kérés egyszer használható és lejáró, HA pushos gate-jóváhagyáshoz kötött. Az MCP-eszköz közvetlen metódusa nem végez írást.
 - `ha_get_labels`: **Read** kockázatú címkeolvasás, legfeljebb 100 biztonságosan kiadható elem, `label_id` és `name` mezőkkel. A JSON-válasz `items`, `returned_count`, `truncated` mezőket tartalmaz; nincs lapozás. Ez az olvasás nem igényli a registry-írás engedélyezését.
 - `HomeAssistantRegistry:IncludeEntityLabels=true` mellett a `ha_get_state` és `ha_list_states` eredményeiben megjelenik a `labels` azonosítólista is. Ez további, entitásonkénti registry websocket-lekérést igényel; hiba esetén nincs részleges siker. Kikapcsolva a korábbi állapotválasz-séma marad.
+
+### Csoportos registry-módosítás
+
+Példa a `ha_update_registry` argumentumaira:
+
+```json
+{"items":[{"entity_id":"sensor.nappali","patch":{"name":"Nappali érzékelő"}},{"device_id":"device_123","patch":{"name_by_user":"Kerti érzékelő"}}]}
+```
+
+- Vagy `items`, vagy a meglévő egycélú `entity_id`/`device_id` és `patch` adható meg, együtt soha. Minden tagban pontosan egy konkrét cél és `patch` kötelező; 1–50 tag, azonos cél nem ismételhető. Nincs wildcard, automatikus kiválasztás, új művelet vagy mező. A meglévő mező-, domain- és entitás-engedélyezőlista, tiltólista, eszköz-aktíventitás-vizsgálat és vészleállítás minden tagra érvényes.
+- A gate minden előállapotot maga olvas. A normalizált célok, sorrend, teljes előállapot, szándék és tényleges változások egyetlen tulajdonoshoz kötött hash részei. Egyetlen, lejáró, egyszer használható jóváhagyás engedi a teljes csomagot; egy részhalmaz külön nem hagyható jóvá.
+- A HA egyetlen tartós értesítésében jelenik meg a teljes, sorszámozott, név és konkrét célazonosító szerinti előtte→utána lista. A rövid push csak a darabszámot, kérőt, lejáratot és a HA értesítéseire utalást tartalmazza. Döntési gomb csak a teljes tartós értesítés sikeres létrehozása után használható. Hiányzó név/részlet, titokgyanús adat, nem megjeleníthető érték vagy túl nagy teljes lista esetén nincs jóváhagyható kérés: bontsd kisebb csomagokra. A teljes részlet rögzített felső korlátja 32 768 UTF-8 byte; nincs csonkítás és nincs új konfigurációs kulcs.
+- A `gate_approval_status(requestId, wait_seconds)` a tulajdonosnak a teljes `items` listát adja a státuszszöveg utáni JSON-ban, a konkrét célokkal, nevekkel, biztonságos előállapot/szándék/változás adatokkal és emberi megjelenítéssel. Az idegen vagy ismeretlen kérés továbbra sem látható. Az egycélú szöveges státusz nem változott. A végállapot csak a csomag- és eredeti audit lezárása után publikálható; a köztes jóváhagyás nem végrehajtási siker.
+- A végrehajtás rögzített sorrendű. Minden tag előtt újraolvasás és előállapot-egyezés, valamint közvetlen írás előtti cancel/kill/policy ellenőrzés történik. Az első eltérés, HA-hiba, megszakítás, vészleállítás vagy audit-hiba megállítja a csomagot. Nincs rollback, automatikus retry vagy folytatás. Az addig elkészült változások megmaradnak. Az upstream HA registry API nem kínál CAS-t: az utolsó ellenőrzés és az írás között fennmarad egy versenyablak; elveszett HTTP/websocket válasz esetén a hatás bizonytalan lehet.
+- Az eredményben `progress` adja a `total`, `completed`, `stoppedAt` (1-től számozott), `failed`, `notStarted` számlálókat és a zárt hibakategóriát; az egyes elemek `state` értéke `Succeeded`, `Failed` vagy `NotStarted`. A `Failed` bizonytalan hatást is jelenthet, nem visszagörgetést. A Gate eredmény push a kész darabszámot, megállási helyet és hátralévő darabszámot mutatja, nem provider-hibaszöveget. Csomagaudit-hiba után az összállapot sikertelen akkor is, ha minden tag elkészült. Soha ne küldd újra vakon az egész csomagot: ellenőrizd az érintett célokat, és új jóváhagyást kérj a valóban szükséges változásokra.
+- A csomag előkészítésének teljes adatai/hash-e, végrehajtása és eredménye auditált. Minden végrehajtott vagy előállapot-ellenőrzésen megállt tag külön auditot kap a régi értékekkel, sorszámmal és közös `requestId` korrelációval; a kihagyott tagok külön `NotStarted` sorokat kapnak. Audit-hiba esetén a további audit sem garantálható, de siker és további HA-írás nem engedett. A lezárás korlátos és nem ismétli meg a meghiúsult auditírást.
+- Ne tegyél ugyanabba a csomagba egymástól függő területmódosításokat: ha az első eszközmódosítás megváltoztatja egy későbbi entitás öröklött előállapotát, a csomag helyesen eltérésnél megáll. Előbb várd meg az első kérés igazolt sikerét, utána kérd a következőt.
 
 A működéshez a meglévő `HomeAssistant` kliens, a Bitwardenben tárolt HA-token, az audit és az írásokhoz a rendelkezésre álló HA-jóváhagyási csatorna szükséges. A telepítési modell a már elfogadott dedikált admin HA-felhasználót használja; a modul nem ad új jogosultságot és nem kér tokent a hívótól. A websocket ugyanabból az ellenőrzött originből származik, mint a kliens: HTTPS→WSS, kizárólag a meglévő explicit privát IPv4 HTTP-kivételnél HTTP→WS. A titkosítatlan kivétel kockázatai változatlanok.
 

@@ -53,6 +53,14 @@ public sealed class McpInputSchemaTests
                 expected["inputSchema"]!["properties"]!.AsObject().Remove(parameter);
                 actual["inputSchema"]!["properties"]!.AsObject().Remove(parameter);
             }
+            if (original.ProtocolTool.Name == "ha_update_registry")
+            {
+                // A patch/items alternatíva is publikációs kiegészítés; az SDK-példányt nem írja át.
+                expected["inputSchema"]!["properties"]!.AsObject().Remove("items");
+                actual["inputSchema"]!["properties"]!.AsObject().Remove("items");
+                expected["inputSchema"]!.AsObject().Remove("required");
+                actual["inputSchema"]!.AsObject().Remove("required");
+            }
             Assert.True(JsonNode.DeepEquals(expected, actual), original.ProtocolTool.Name);
         }
         Assert.All(tools.EnumerateArray(), tool =>
@@ -78,8 +86,9 @@ public sealed class McpInputSchemaTests
         Assert.Contains("bizonytalan esetben kérdezz", description);
         Assert.Contains("előbb az eszközmódosítás sikerét", description);
         Assert.DoesNotContain("továbbra is tiltott", description);
-        Assert.Contains("minden egyes módosítás", description);
-        Assert.Contains("nem automatikus többcélú művelet", description);
+        Assert.Contains("minden tag külön policy-ellenőrzést", description);
+        Assert.Contains("Egy közös, egyszer használható, lejáró jóváhagyás", description);
+        Assert.Contains("nincs rollback/retry", description);
         var exampleStart = description.IndexOf('{');
         var exampleEnd = description.IndexOf("}}", exampleStart, StringComparison.Ordinal) + 2;
         using var example = JsonDocument.Parse(description[exampleStart..exampleEnd]);
@@ -88,7 +97,16 @@ public sealed class McpInputSchemaTests
         Assert.Equal(2, example.RootElement.EnumerateObject().Count());
         var input = registry.GetProperty("inputSchema");
         Assert.False(input.GetProperty("properties").TryGetProperty("before", out _));
-        Assert.Contains(input.GetProperty("required").EnumerateArray(), item => item.GetString() == "patch");
+        Assert.Empty(input.GetProperty("required").EnumerateArray());
+        var items = input.GetProperty("properties").GetProperty("items");
+        Assert.Equal("array", items.GetProperty("type").GetString());
+        Assert.Equal(1, items.GetProperty("minItems").GetInt32());
+        Assert.Equal(50, items.GetProperty("maxItems").GetInt32());
+        var member = items.GetProperty("items");
+        Assert.Equal("object", member.GetProperty("type").GetString());
+        Assert.Equal("patch", Assert.Single(member.GetProperty("required").EnumerateArray()).GetString());
+        Assert.Empty(member.GetProperty("additionalProperties").GetProperty("not").EnumerateObject());
+        Assert.Equal(new[] { "device_id", "entity_id", "patch" }, member.GetProperty("properties").EnumerateObject().Select(field => field.Name).Order(StringComparer.Ordinal));
         var patch = input.GetProperty("properties").GetProperty("patch");
         Assert.Equal("object", patch.GetProperty("type").GetString());
         Assert.Equal(1, patch.GetProperty("minProperties").GetInt32());

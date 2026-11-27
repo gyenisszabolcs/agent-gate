@@ -5,7 +5,7 @@ namespace AgentGate.Approval.HomeAssistant;
 
 public sealed partial class ApprovalPushFormatter
 {
-    public string Outcome(ApprovalNotice request, ApprovalState state, string token, string? result = null)
+    public string Outcome(ApprovalNotice request, ApprovalState state, string token, string? result = null, ApprovalBatchProgress? progress = null)
     {
         var status = state switch
         {
@@ -15,6 +15,16 @@ public sealed partial class ApprovalPushFormatter
             ApprovalState.Failed => "Sikertelen vagy bizonytalan",
             _ => throw new InvalidOperationException("Az eredményértesítés nem küldhető.")
         };
+        if (request.Tool == "ha_update_registry" && request.Presentation?.Items is { Count: >= 1 and <= 50 } items)
+        {
+            var safe = progress ?? new(items.Count, state == ApprovalState.Executed ? items.Count : 0, null, "");
+            if (safe.Total != items.Count || safe.Completed < 0 || safe.Completed > safe.Total ||
+                safe.StoppedAt is { } stopped && (stopped != safe.Completed + 1 || stopped > safe.Total))
+                throw new InvalidOperationException("Az eredményértesítés nem küldhető.");
+            var counts = new ApprovalBatchProgress(safe.Total, safe.Completed, safe.StoppedAt, "").Summary;
+            return $"{status}: {items.Count} elem módosítása\n{counts}\nRészletek: Home Assistant értesítések és gate_approval_status." +
+                (state == ApprovalState.Failed ? " Nincs visszagörgetés; az utolsó tag hatása bizonytalan lehet." : "");
+        }
         string action;
         string target;
         try

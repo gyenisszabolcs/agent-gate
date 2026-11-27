@@ -9,12 +9,13 @@ namespace AgentGate.Integrations.HomeAssistant.Registry;
 public sealed partial class HomeAssistantRegistryService(HomeAssistantClient? configuredClient, RegistryPolicy policy, IKillSwitchStateSource killSwitch)
 {
     private HomeAssistantClient client => configuredClient ?? throw RegistryPolicy.Invalid();
-    public Task<PreparedOperation> PrepareAsync(IReadOnlyDictionary<string, JsonElement> arguments, CancellationToken ct) => PrepareCoreAsync(arguments, ct, true);
+    public Task<PreparedOperation> PrepareAsync(IReadOnlyDictionary<string, JsonElement> arguments, CancellationToken ct) =>
+        arguments.ContainsKey("items") ? PrepareBatchAsync(arguments, ct) : PrepareCoreAsync(arguments, ct, true);
 
-    private async Task<PreparedOperation> PrepareCoreAsync(IReadOnlyDictionary<string, JsonElement> arguments, CancellationToken ct, bool includePresentation)
+    private async Task<PreparedOperation> PrepareCoreAsync(IReadOnlyDictionary<string, JsonElement> arguments, CancellationToken ct, bool includePresentation, bool extended = false)
     {
         ValidateArguments(arguments);
-        if (arguments.ContainsKey("device_id")) return await PrepareDeviceAsync(arguments, ct, includePresentation);
+        if (arguments.ContainsKey("device_id")) return await PrepareDeviceAsync(arguments, ct, includePresentation, extended);
         var entityId = arguments["entity_id"].GetString()!;
         policy.RequireEntity(client, entityId);
         var patch = RegistryPolicy.Patch(arguments["patch"]);
@@ -67,7 +68,7 @@ public sealed partial class HomeAssistantRegistryService(HomeAssistantClient? co
                 display.Add(field, new(oldValue, newValue));
             }
             presentation = new(before["name"] as string, display);
-            _ = presentation.RegistryLine();
+            _ = presentation.RegistryLine(extended: extended);
         }
         ct.ThrowIfCancellationRequested();
         return new PreparedOperation(HomeAssistantRegistryOperation.ToolName, RiskLevel.Configuration,
@@ -109,6 +110,11 @@ public sealed partial class HomeAssistantRegistryService(HomeAssistantClient? co
 
     internal static void ValidateArguments(IReadOnlyDictionary<string, JsonElement> arguments)
     {
+        if (arguments.ContainsKey("items"))
+        {
+            _ = BatchArguments(arguments);
+            return;
+        }
         if (arguments.Keys.Any(key => key is not ("entity_id" or "device_id" or "patch")) || arguments.Count != 2 ||
             !arguments.TryGetValue("patch", out var patch)) throw RegistryPolicy.Invalid();
         if (arguments.TryGetValue("device_id", out var device))
@@ -214,6 +220,8 @@ public sealed class HomeAssistantRegistryOperation(HomeAssistantRegistryService 
     public string Tool => ToolName;
     public RiskLevel Risk => RiskLevel.Configuration;
     public ValueTask<PreparedOperation> PrepareAsync(IReadOnlyDictionary<string, JsonElement> arguments, CancellationToken cancellationToken) => new(service.PrepareAsync(arguments, cancellationToken));
+    public Task<string> ExecuteAsync(PreparedOperation operation, ApprovalExecutionContext context, CancellationToken cancellationToken) =>
+        operation.Parameters.ContainsKey("items") ? service.ExecuteBatchAsync(operation, context, cancellationToken) : ExecuteAsync(operation, cancellationToken);
     public async Task<string> ExecuteAsync(PreparedOperation operation, CancellationToken cancellationToken)
     {
         await service.ExecuteAsync(operation, cancellationToken);
