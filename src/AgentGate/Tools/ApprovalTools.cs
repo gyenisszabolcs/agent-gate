@@ -20,7 +20,7 @@ public sealed class ApprovalTools
         if (wait_seconds is < 0 or > 120) throw new GateToolException("A wait_seconds csak 0 és 120 közötti egész szám lehet.");
         if (!Guid.TryParseExact(requestId, "D", out var id) || await gate.GetStatusAsync(id, wait_seconds, cancellationToken) is not { } outcome)
             return "A kérés nem található.";
-        return outcome.State switch
+        var message = outcome.State switch
         {
             AgentGate.Approval.ApprovalState.Executed => "jóváhagyva és végrehajtva: " + outcome.Result,
             AgentGate.Approval.ApprovalState.Failed => "sikertelen: " + outcome.Result,
@@ -29,6 +29,10 @@ public sealed class ApprovalTools
             AgentGate.Approval.ApprovalState.Approved => "jóváhagyva; végrehajtásra vagy eredményre várakozik (ez még nem siker)",
             _ => "várakozik"
         };
+        return outcome.Items is null ? message : message + "\n" + System.Text.Json.JsonSerializer.Serialize(new
+        {
+            items = outcome.Items, progress = outcome.Progress
+        }, new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase });
     }
 
     [ToolAuditParameters("text")]

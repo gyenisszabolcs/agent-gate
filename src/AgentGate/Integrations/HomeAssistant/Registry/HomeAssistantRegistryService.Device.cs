@@ -7,7 +7,7 @@ namespace AgentGate.Integrations.HomeAssistant.Registry;
 
 public sealed partial class HomeAssistantRegistryService
 {
-    private async Task<PreparedOperation> PrepareDeviceAsync(IReadOnlyDictionary<string, JsonElement> arguments, CancellationToken ct, bool includePresentation)
+    private async Task<PreparedOperation> PrepareDeviceAsync(IReadOnlyDictionary<string, JsonElement> arguments, CancellationToken ct, bool includePresentation, bool extended = false)
     {
         policy.RequireDevice();
         var deviceId = RegistryPolicy.Id(arguments["device_id"]);
@@ -48,7 +48,7 @@ public sealed partial class HomeAssistantRegistryService
                 display.Add(field, new(oldValue, newValue));
             }
             presentation = new(before["name_by_user"] as string ?? before["name"] as string, display);
-            _ = presentation.RegistryLine();
+            _ = presentation.RegistryLine(extended: extended);
         }
         ct.ThrowIfCancellationRequested();
         return new(HomeAssistantRegistryOperation.ToolName, RiskLevel.Configuration, new Dictionary<string, string?>

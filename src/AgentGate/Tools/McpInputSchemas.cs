@@ -63,6 +63,28 @@ internal static class McpInputSchemas
         schema["properties"]![parameter] = parameter == "wait_seconds"
             ? JsonNode.Parse("""{"type":"integer","default":0,"minimum":0,"maximum":120,"description":"Jóváhagyáskérés után ennyi másodpercig várjon döntésre vagy eredményre, majd a döntés szerint folytassa. 0: azonnali állapot. A jóváhagyás nem végrehajtási siker: szükség esetén az eredményt is várja meg. Időtúllépés után státuszt kérdezzen újra, ne a műveletet ismételje."}""")
             : JsonNode.Parse((parameter == "patch" ? Patch : ControlData).GetRawText());
+        if (tool.Name == "ha_update_registry")
+        {
+            var member = new JsonObject
+            {
+                ["type"] = "object",
+                ["properties"] = new JsonObject
+                {
+                    ["entity_id"] = schema["properties"]!["entity_id"]!.DeepClone(),
+                    ["device_id"] = schema["properties"]!["device_id"]!.DeepClone(),
+                    ["patch"] = JsonNode.Parse(Patch.GetRawText())
+                },
+                ["required"] = new JsonArray("patch"),
+                ["additionalProperties"] = JsonNode.Parse("""{"not":{}}""")
+            };
+            schema["properties"]!["items"] = new JsonObject
+            {
+                ["type"] = "array", ["minItems"] = 1, ["maxItems"] = 50, ["items"] = member,
+                ["description"] = "Rögzített sorrendű, legfeljebb 50 konkrét entitás/eszköz. Kizárólag items vagy egycélú entity_id/device_id és patch. Egy közös jóváhagyás, teljes HA értesítés, első hibánál stop; nincs rollback/retry. Azonos cél csak egyszer szerepelhet."
+            };
+            // A célkizárásokat a nyers bemeneten a RegistryPolicy is kötelezően ellenőrzi.
+            schema["required"] = new JsonArray();
+        }
         copy.InputSchema = JsonSerializer.SerializeToElement(schema);
         return copy;
     }

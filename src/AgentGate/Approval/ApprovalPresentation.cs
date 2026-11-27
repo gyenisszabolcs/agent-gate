@@ -7,8 +7,10 @@ using AgentGate.Tools;
 namespace AgentGate.Approval;
 
 /// <summary>Csak megjelenítés; nem része a paramétereknek, a hash-nek vagy a jogosultságvizsgálatnak.</summary>
-public sealed class ApprovalPresentation(string? targetName, IReadOnlyDictionary<string, ApprovalDisplayChange>? changes = null)
+public sealed class ApprovalPresentation(string? targetName, IReadOnlyDictionary<string, ApprovalDisplayChange>? changes = null,
+    IReadOnlyList<ApprovalPresentation>? items = null)
 {
+    public IReadOnlyList<ApprovalPresentation>? Items { get; } = items is null ? null : Array.AsReadOnly(items.ToArray());
     public string? TargetName { get; } = targetName;
     public FrozenDictionary<string, ApprovalDisplayChange> Changes { get; } =
         (changes ?? new Dictionary<string, ApprovalDisplayChange>()).ToFrozenDictionary(StringComparer.Ordinal);
@@ -40,7 +42,7 @@ public sealed class ApprovalPresentation(string? targetName, IReadOnlyDictionary
 
     public static string RequireName(string? value, string token = "") => IsHumanName(value, token) ? value! : throw CannotDisplay();
 
-    public string RegistryLine(string token = "")
+    public string RegistryLine(string token = "", bool extended = false)
     {
         if (Changes.Count == 0) throw CannotDisplay();
         var parts = Changes.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair =>
@@ -50,9 +52,9 @@ public sealed class ApprovalPresentation(string? targetName, IReadOnlyDictionary
             var after = RequireValue(pair.Value.After, token);
             return $"{label}: {before} → {after}";
         });
-        var target = IsHumanName(TargetName, token) ? TargetName! : "Kiválasztott eszköz";
+        var target = extended ? RequireName(TargetName, token) : IsHumanName(TargetName, token) ? TargetName! : "Kiválasztott eszköz";
         var line = target + " · " + string.Join("; ", parts);
-        if (new StringInfo(line).LengthInTextElements > 160 || line.Length > 640) throw CannotDisplay();
+        if (extended ? line.Length > 8192 : new StringInfo(line).LengthInTextElements > 160 || line.Length > 640) throw CannotDisplay();
         return line;
     }
 

@@ -151,6 +151,8 @@ public sealed partial class ApprovalGate(
                 lock (pending.Sync)
                 {
                     pending.State = ApprovalState.Approved;
+                    if (ApprovalBatchDetails.Items(pending.Operation) is { } batchItems)
+                        pending.Progress = new(batchItems.Count, 0, null, "Végrehajtás még nem kezdődött.");
                     pending.PublishStatus();
                 }
                 var store = scope.ServiceProvider.GetRequiredService<IAuditStore>();
@@ -177,11 +179,13 @@ public sealed partial class ApprovalGate(
                         continue;
                     }
                     var handler = scope.ServiceProvider.GetServices<IApprovalOperationHandler>().Single(item => item.Tool == pending.Operation.Tool && item.Risk == pending.Operation.Risk);
-                    var result = await handler.ExecuteAsync(pending.Operation, stoppingToken);
+                    var result = await handler.ExecuteAsync(pending.Operation, new(decision.Id, pending.Owner, store, clock), stoppingToken);
                     lock (pending.Sync)
                     {
                         pending.State = ApprovalState.Executed;
                         pending.Result = SecretRedactor.RedactText(result);
+                        if (ApprovalBatchDetails.Items(pending.Operation) is { } items)
+                            pending.Progress = new(items.Count, items.Count, null, "Minden tag végrehajtása és tag-auditja igazolt.");
                     }
                     completionAttempted = true;
                     using var completion = new CancellationTokenSource(TimeSpan.FromSeconds(5));
@@ -192,9 +196,13 @@ public sealed partial class ApprovalGate(
                     lock (pending.Sync)
                     {
                         pending.State = ApprovalState.Failed;
+                        if (exception is AgentGate.Integrations.HomeAssistant.Registry.RegistryBatchExecutionException batchError)
+                            pending.Progress = batchError.Progress;
+                        else if (pending.Progress is { } failedProgress)
+                            pending.Progress = failedProgress with { Reason = "A művelet vagy a csomagaudit sikertelen; ez nem visszagörgetés." };
                         var safeMessage = completionAttempted ? null : scope.ServiceProvider.GetServices<IOperationErrorPolicy>()
                             .Select(policy => policy.GetSafeMessage(exception, pending.Operation)).FirstOrDefault(message => message is not null);
-                        pending.Result = safeMessage is null
+                        pending.Result = pending.Progress is { } progress ? progress.Summary + (completionAttempted ? " A csomagaudit lezárása sikertelen." : "") : safeMessage is null
                             ? "A jóváhagyott művelet vagy az audit lezárása sikertelen; ez nem visszagörgetés."
                             : SecretRedactor.RedactText(safeMessage);
                     }
@@ -236,7 +244,10 @@ public sealed partial class ApprovalGate(
         // A végállapot csak az összes, még hibázható auditlépés után válik láthatóvá.
         if (requests.TryGetValue(outcome.Id, out var pending))
             lock (pending.Sync)
+            {
                 pending.PublishStatus();
+                outcome = pending.Status;
+            }
         return channel is null ? Task.CompletedTask : outcomes.Writer.WriteAsync(outcome, cancellationToken).AsTask();
     }
 
@@ -276,7 +287,7 @@ public sealed partial class ApprovalGate(
             lock (pending.Sync)
             {
                 pending.State = ApprovalState.Failed;
-                pending.Result = "Az eredeti audit lezárása sikertelen; tartós végállapot nem igazolható. Ez nem visszagörgetés.";
+                pending.Result = (pending.Progress is { } progress ? progress.Summary + " " : "") + "Az eredeti audit lezárása sikertelen; tartós végállapot nem igazolható. Ez nem visszagörgetés.";
             }
             using var failure = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await RecordLifecycleAsync(pending, "failed", null, failure.Token);
@@ -302,6 +313,7 @@ public sealed partial class ApprovalGate(
                 },
                 state = pending.State.ToString(),
                 result = phase is "outcome" or "failed" ? pending.Result : null,
+                batch = phase is "outcome" or "failed" ? pending.Progress : null,
                 actor = SecretRedactor.RedactText(decision?.Actor),
                 channel = SecretRedactor.RedactText(channel?.Name),
                 decidedAt = decision?.DecidedAt,
@@ -317,7 +329,7 @@ public sealed partial class ApprovalGate(
             lock (pending.Sync)
             {
                 pending.State = ApprovalState.Failed;
-                pending.Result = "A jóváhagyási audit sikertelen; ez nem visszagörgetés.";
+                pending.Result = (pending.Progress is { } progress ? progress.Summary + " " : "") + "A jóváhagyási audit sikertelen; ez nem visszagörgetés.";
             }
             // Ez új hibaesemény, nem a meghiúsult írás vagy a művelet újrapróbálása.
             if (phase != "failed")
@@ -344,14 +356,20 @@ public sealed partial class ApprovalGate(
             .Where(pair => allowlist.Contains(pair.Key, StringComparer.Ordinal))
             .ToDictionary(pair => pair.Key, pair => SecretRedactor.RedactText(pair.Value))));
         var owner = auditOptions.Value.Caller;
+        var batchItems = ApprovalBatchDetails.Items(operation);
+        if (batchItems is not null)
+        {
+            if (!allowlist.Contains("items", StringComparer.Ordinal)) throw ApprovalPresentation.CannotDisplay();
+            summary = JsonSerializer.Serialize(operation.Parameters);
+        }
         if (operation.RequiresLosslessAudit)
         {
             // Ha egy előállapot nem őrizhető meg hiánytalanul és titokmentesen,
             // sem push, sem későbbi írás nem engedélyezhető.
             var safe = SecretRedactor.RedactParameters(operation.Parameters);
-            if (operation.Parameters.Any(pair => !allowlist.Contains(pair.Key, StringComparer.Ordinal) ||
+            if (batchItems is null && (operation.Parameters.Any(pair => !allowlist.Contains(pair.Key, StringComparer.Ordinal) ||
                 !safe.TryGetValue(pair.Key, out var value) || value != pair.Value || SecretRedactor.RedactText(pair.Value) != pair.Value) ||
-                summary.Length > 32_768)
+                summary.Length > 32_768))
                 throw new InvalidOperationException("A teljes előállapot nem auditálható.");
             using var scope = scopes.CreateScope();
             var store = scope.ServiceProvider.GetRequiredService<IAuditStore>();
@@ -410,12 +428,13 @@ public sealed partial class ApprovalGate(
         public bool Claimed { get; set; }
         public ApprovalState State { get; set; } = ApprovalState.Pending;
         public string? Result { get; set; }
-        public ApprovalOutcome Status { get; private set; } = new(Notice.Id, ApprovalState.Pending, null);
+        public ApprovalBatchProgress? Progress { get; set; }
+        public ApprovalOutcome Status { get; private set; } = ApprovalBatchDetails.Snapshot(Notice.Id, ApprovalState.Pending, null, Operation, null);
         // A munkás auditálás közbeni állapota nem publikált végállapot.
         // A döntés és a végleges eredmény pillanatképe/feliratkozása Sync alatt változik.
         public void PublishStatus()
         {
-            Status = new(Notice.Id, State, Result);
+            Status = ApprovalBatchDetails.Snapshot(Notice.Id, State, Result, Operation, Progress);
             var previous = Changed;
             Changed = new(TaskCreationOptions.RunContinuationsAsynchronously);
             previous.TrySetResult();

@@ -1248,6 +1248,7 @@ public sealed partial class HomeAssistantApprovalChannelTests
     private sealed class FakeHttp : HttpMessageHandler, IApprovalHttpHandlerFactory
     {
         public int Count;
+        public System.Collections.Concurrent.ConcurrentQueue<(string Path, string Body)> Requests { get; } = new();
         public Uri? LastUri { get; private set; }
         public string? Authorization { get; private set; }
         public string? Body { get; private set; }
@@ -1265,6 +1266,7 @@ public sealed partial class HomeAssistantApprovalChannelTests
             LastUri = request.RequestUri;
             Authorization = request.Headers.Authorization?.Parameter;
             Body = await request.Content!.ReadAsStringAsync(cancellationToken);
+            Requests.Enqueue((request.RequestUri!.AbsolutePath, Body));
             if (Release is not null) { BlockingEntered.TrySetResult(); await Release.WaitAsync(cancellationToken); }
             if (Block) await Task.Delay(Timeout.Infinite, cancellationToken);
             var response = new HttpResponseMessage(Status) { Content = DisposeRelease is { } disposeRelease ? new BarrierContent(ResponseBody, disposeRelease, DisposeEntered) : new StringContent(ResponseBody) };

@@ -15,6 +15,11 @@ public sealed partial class ApprovalPushFormatter(Func<TimeZoneInfo>? timeZone =
     {
         var zone = (timeZone ?? (() => TimeZoneInfo.FindSystemTimeZoneById("Europe/Budapest")))();
         var expires = TimeZoneInfo.ConvertTime(request.ExpiresAt, zone).ToString("HH:mm", CultureInfo.InvariantCulture);
+        if (request.Tool == "ha_update_registry" && request.Presentation?.Items is { } items)
+        {
+            _ = RegistryBatchDetails(request, token);
+            return ($"Jóváhagyás: {items.Count} elem módosítása", $"Mikaela kéri · lejár {expires}\nTeljes lista: Home Assistant értesítések.");
+        }
         var (action, target) = Content(request, token);
         return ($"Jóváhagyás: {action}", $"{target}\nMikaela kéri · lejár {expires}");
     }

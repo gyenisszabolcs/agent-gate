@@ -172,7 +172,7 @@ public sealed class HomeAssistantApprovalChannel(
         lock (sync)
         {
             var grant = notifications.Values.FirstOrDefault(item => item.ApproveCode == action || item.RejectCode == action);
-            if (grant is null || grant.Decided || clock.GetUtcNow() >= grant.Notice.ExpiresAt)
+            if (grant is null || !grant.DetailsReady || grant.Decided || clock.GetUtcNow() >= grant.Notice.ExpiresAt)
                 return;
             var choice = grant.ApproveCode == action ? ApprovalChoice.Approve : ApprovalChoice.Reject;
             if (decisions.Writer.TryWrite(new ApprovalDecision(grant.Notice.Id, choice, options.ExpectedUserId!, clock.GetUtcNow())))
@@ -237,6 +237,13 @@ public sealed class HomeAssistantApprovalChannel(
             var lease = await ReadTokenLeaseAsync(deadline.Token);
             var token = lease.Value;
             var push = presentation.Format(request, token);
+            if (request.Tool == "ha_update_registry" && request.Presentation?.Items is not null)
+            {
+                var details = presentation.RegistryBatchDetails(request, token);
+                await PostAsync(new { notification_id = "agent_gate_" + request.Id.ToString("N"), title = push.Title, message = details },
+                    lease, deadline.Token, "/api/services/persistent_notification/create");
+                lock (sync) grant.DetailsReady = true;
+            }
             if (!available) throw new InvalidOperationException();
             await PostAsync(new
             {
@@ -279,9 +286,9 @@ public sealed class HomeAssistantApprovalChannel(
         return result;
     }
 
-    private async Task PostAsync(object payload, SecretLease lease, CancellationToken cancellationToken)
+    private async Task PostAsync(object payload, SecretLease lease, CancellationToken cancellationToken, string? path = null)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/services/notify/" + options.NotifyService!["notify.".Length..]);
+        using var request = new HttpRequestMessage(HttpMethod.Post, path ?? "/api/services/notify/" + options.NotifyService!["notify.".Length..]);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", lease.Value);
         request.Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(payload));
         request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
@@ -305,6 +312,7 @@ public sealed class HomeAssistantApprovalChannel(
     private sealed record NotificationGrant(ApprovalNotice Notice, string ApproveCode, string RejectCode)
     {
         public bool Decided { get; set; }
+        public bool DetailsReady { get; set; } = Notice.Presentation?.Items is null;
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)
@@ -338,7 +346,7 @@ public sealed class HomeAssistantApprovalChannel(
             deadline.CancelAfter(TimeSpan.FromSeconds(options.TimeoutSeconds));
             var lease = await ReadTokenLeaseAsync(deadline.Token);
             var token = lease.Value;
-            await PostAsync(new { title = "Gate eredmény", message = presentation.Outcome(grant.Notice, outcome.State, token, outcome.Result) }, lease, deadline.Token);
+            await PostAsync(new { title = "Gate eredmény", message = presentation.Outcome(grant.Notice, outcome.State, token, outcome.Result, outcome.Progress) }, lease, deadline.Token);
         }
         catch (Exception)
         {

@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using AgentGate.Policy;
+using AgentGate.Audit;
 
 namespace AgentGate.Approval;
 
@@ -52,7 +53,10 @@ public interface IApprovalOperationHandler
         return ValueTask.FromResult(Prepare(arguments));
     }
     Task<string> ExecuteAsync(PreparedOperation operation, CancellationToken cancellationToken);
+    Task<string> ExecuteAsync(PreparedOperation operation, ApprovalExecutionContext context, CancellationToken cancellationToken) => ExecuteAsync(operation, cancellationToken);
 }
+
+public sealed record ApprovalExecutionContext(Guid RequestId, string Owner, IAuditStore Audit, TimeProvider Clock);
 
 public sealed class ApprovalTestOperation : IApprovalOperationHandler
 {
