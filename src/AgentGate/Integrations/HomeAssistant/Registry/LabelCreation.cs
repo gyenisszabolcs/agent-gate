@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using AgentGate.Approval;
+using AgentGate.Tools;
 
 namespace AgentGate.Integrations.HomeAssistant.Registry;
 
@@ -95,11 +96,14 @@ internal static class LabelCreation
     {
         RegistrySocket.ValidateUnique(patch);
         if (!patch.TryGetProperty("labels_add_created", out var refs)) return [];
-        if (refs.ValueKind != JsonValueKind.Array || refs.GetArrayLength() is < 1 or > 16) throw RegistryPolicy.Invalid();
-        var indices = refs.EnumerateArray().Select(value => value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var index) && index is >= 0 and < 50 ? index : throw RegistryPolicy.Invalid()).ToArray();
-        if (indices.Distinct().Count() != indices.Length) throw RegistryPolicy.Invalid();
+        if (refs.ValueKind != JsonValueKind.Array || refs.GetArrayLength() is < 1 or > 16) throw InvalidReference();
+        var indices = refs.EnumerateArray().Select(value => value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var index) && index is >= 0 and < 50 ? index : throw InvalidReference()).ToArray();
+        if (indices.Distinct().Count() != indices.Length) throw InvalidReference();
         return indices;
     }
+
+    internal static GateToolException InvalidReference() => new(
+        "Érvénytelen labels_add_created hivatkozás: a teljes items lista nulla alapú indexeit add meg egész számként, ismétlés nélkül, kizárólag korábbi create_label tagokra. Nem a létrehozások sorszáma, címkenév vagy címkeazonosító; önmagára, előre, nem create_label vagy hiányzó tagra hivatkozás nem engedélyezett.");
 
     public static JsonElement Patch(JsonElement source, bool device)
     {

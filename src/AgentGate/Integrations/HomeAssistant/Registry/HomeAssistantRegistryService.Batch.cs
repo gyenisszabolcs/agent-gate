@@ -1,5 +1,6 @@
 using System.Text.Json;
 using AgentGate.Approval;
+using AgentGate.Approval.HomeAssistant;
 using AgentGate.Policy;
 using AgentGate.Secrets;
 
@@ -24,7 +25,7 @@ public sealed partial class HomeAssistantRegistryService
                 var kind = member.ContainsKey("device_id") ? "device_id" : "entity_id";
                 if (!targets.Add(kind + ":" + member[kind].GetString())) throw RegistryPolicy.Invalid();
                 foreach (var index in LabelCreation.References(member["patch"]))
-                    if (index >= result.Count || !result[index].ContainsKey("create_label")) throw RegistryPolicy.Invalid();
+                    if (index >= result.Count || !result[index].ContainsKey("create_label")) throw LabelCreation.InvalidReference();
                 foreach (var field in new[] { "labels", "labels_add", "labels_remove" })
                     if (member["patch"].TryGetProperty(field, out var ids) && RegistryPolicy.Ids(ids).Any(id => id.StartsWith("gate_pending_", StringComparison.Ordinal))) throw RegistryPolicy.Invalid();
             }
@@ -71,6 +72,10 @@ public sealed partial class HomeAssistantRegistryService
         var operation = new PreparedOperation(HomeAssistantRegistryOperation.ToolName, RiskLevel.Configuration, parameters, requiresLosslessAudit: true,
             presentation: new(null, items: members.Select(member => member.Presentation!).ToArray()));
         _ = ApprovalBatchDetails.Items(operation);
+        // A teljes veszteségmentes szöveget még a csatorna előtt ellenőrizzük, hogy a hívó a valódi okot kapja.
+        // A csatorna az aktuális tokennel ismét validál; ez nem helyettesíti annak titokvédelmét.
+        _ = new ApprovalPushFormatter().RegistryBatchDetails(new(Guid.Empty, "Mikaela", operation.Tool, operation.Risk,
+            JsonSerializer.Serialize(operation.Parameters), DateTimeOffset.UnixEpoch, operation.Presentation), "");
         return operation;
     }
 

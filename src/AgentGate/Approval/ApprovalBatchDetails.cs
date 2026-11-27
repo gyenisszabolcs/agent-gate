@@ -24,7 +24,9 @@ internal static class ApprovalBatchDetails
                 throw ApprovalPresentation.CannotDisplay();
             var target = member.GetValueOrDefault("entity_id") ?? member.GetValueOrDefault("device_id") ??
                 (member.ContainsKey("create_label") ? "új címke" : throw ApprovalPresentation.CannotDisplay());
-            result.Add(new(index + 1, target, ApprovalPresentation.RequireName(displays[index].TargetName),
+            if (displays[index].EntityIdFallback is { } fallback && (member.GetValueOrDefault("entity_id") != fallback || target != fallback))
+                throw ApprovalPresentation.CannotDisplay();
+            result.Add(new(index + 1, target, displays[index].RequireRegistryTarget(),
                 member.ToFrozenDictionary(StringComparer.Ordinal), displays[index]));
         }
         return Array.AsReadOnly(result.ToArray());

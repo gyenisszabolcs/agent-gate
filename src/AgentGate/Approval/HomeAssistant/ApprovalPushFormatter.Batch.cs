@@ -30,9 +30,11 @@ public sealed partial class ApprovalPushFormatter
             }
             lines.Add("Rögzített sorrend; az első hibánál leáll. Nincs visszagörgetés vagy újrapróbálás. Írás előtt újraellenőrzés; nem atomi védelem.");
             var details = string.Join('\n', lines);
-            if (Encoding.UTF8.GetByteCount(details) > 32_768 || token.Length > 0 && details.Contains(token, StringComparison.Ordinal)) throw InvalidSummary();
+            if (Encoding.UTF8.GetByteCount(details) > 32_768) throw ApprovalPresentation.TooLarge(full: true);
+            if (token.Length > 0 && details.Contains(token, StringComparison.Ordinal)) throw InvalidSummary();
             return details;
         }
+        catch (Tools.GateToolException) { throw; }
         catch (Exception) { throw InvalidSummary(); }
     }
 }

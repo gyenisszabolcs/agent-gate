@@ -80,7 +80,7 @@ internal static class McpInputSchemas
             schema["properties"]!["create_label"] = JsonNode.Parse(CreateLabel.GetRawText());
             var batchPatch = JsonNode.Parse(Patch.GetRawText())!;
             batchPatch["properties"]!["labels_add_created"] = JsonNode.Parse("""
-                {"type":"array","minItems":1,"maxItems":16,"uniqueItems":true,"items":{"type":"integer","minimum":0,"maximum":49},"description":"Korábbi create_label tag 0-tól számozott items indexe, nem név/ID. Entitásnál hozzáadás; eszköznél a labels teljes listáját egészíti ki."}
+                {"type":"array","minItems":1,"maxItems":16,"uniqueItems":true,"items":{"type":"integer","minimum":0,"maximum":49},"description":"Korábbi create_label tag indexe a teljes, 0-tól számozott items listában, nem a létrehozások sorszáma vagy név/ID. A 0. és 2. helyen létrehozott címkék hivatkozása [0] és [2]. Entitásnál hozzáadás; eszköznél a labels teljes listáját egészíti ki."}
                 """);
             var member = new JsonObject
             {

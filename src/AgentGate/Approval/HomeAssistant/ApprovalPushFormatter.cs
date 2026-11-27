@@ -54,7 +54,7 @@ public sealed partial class ApprovalPushFormatter(Func<TimeZoneInfo>? timeZone =
     public static string SafeLine(string value, int limit, string token)
     {
         // Az ismert token eltávolítása a soronkénti és az összesített vágást is megelőzi.
-        var safe = SecretRedactor.RedactText(value.Replace(token, "[REDACTED]", StringComparison.Ordinal))!;
+        var safe = SecretRedactor.RedactText(token.Length == 0 ? value : value.Replace(token, "[REDACTED]", StringComparison.Ordinal))!;
         safe = string.Concat(safe.Select(character => char.IsControl(character) ||
             char.GetUnicodeCategory(character) is UnicodeCategory.Format or UnicodeCategory.LineSeparator or UnicodeCategory.ParagraphSeparator
             ? ' ' : character));

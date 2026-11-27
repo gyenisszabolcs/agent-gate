@@ -27,6 +27,7 @@ public sealed partial class ApprovalPushFormatter
                 field.Name != targetField && field.Name is not ("patch" or "before" or "after" or "changes") &&
                 !(hasReferences && field.Name is "label_refs" or "label_catalog"))) throw InvalidSummary();
             var target = Text(root, targetField);
+            if (display.EntityIdFallback is { } fallback && (deviceTarget || fallback != target)) throw InvalidSummary();
             if (deviceTarget) _ = RegistryPolicy.Id(deviceId);
             else if (!ControlPolicy.CanonicalEntity(target)) throw InvalidSummary();
             using var before = JsonDocument.Parse(Text(root, "before"));
