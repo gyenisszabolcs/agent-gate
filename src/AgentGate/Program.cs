@@ -45,6 +45,7 @@ builder.Services.AddHomeAssistantRegistry(builder.Configuration);
 builder.Services.AddHomeAssistantApproval(builder.Configuration);
 builder.Services.AddSingleton<IApprovalOperationHandler, ApprovalTestOperation>();
 builder.Services.AddSingleton<ApprovalGate>();
+builder.Services.AddSingleton<IToolCallPolicy, ApprovalStatusCallPolicy>();
 builder.Services.AddOptions<ApprovalGateOptions>()
     .Configure<IConfiguration>((options, configuration) =>
     {

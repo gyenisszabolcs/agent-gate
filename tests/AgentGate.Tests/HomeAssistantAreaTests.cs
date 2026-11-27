@@ -128,11 +128,13 @@ public sealed class HomeAssistantAreaTests
     internal static HomeAssistantReadToolsTests.Fixture CreateFixture(string areas = Areas, string[]? domains = null)
     {
         var fixture = new HomeAssistantReadToolsTests.Fixture("{}", domains);
-        fixture.Handler.Respond = (request, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        fixture.Handler.Respond = async (request, ct) => new HttpResponseMessage(HttpStatusCode.OK)
         {
-            Content = request.RequestUri!.AbsolutePath == "/api/template" ? new StringContent(areas) :
+            Content = request.RequestUri!.AbsolutePath == "/api/template" ? new StringContent(
+                (await request.Content!.ReadAsStringAsync(ct)).Contains("{% set entity_ids = ", StringComparison.Ordinal)
+                    ? HomeAssistantReadToolsTests.Handler.TemplatePayload(await request.Content.ReadAsStringAsync(ct)) : areas) :
                 JsonContent.Create(request.RequestUri.AbsolutePath == "/api/states" ? States : States[0])
-        });
+        };
         return fixture;
     }
 }

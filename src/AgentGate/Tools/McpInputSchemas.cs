@@ -53,13 +53,16 @@ internal static class McpInputSchemas
         {
             "ha_update_registry" => "patch",
             "ha_control" or "ha_sensitive_control" => "data",
+            "gate_approval_status" => "wait_seconds",
             _ => null
         };
         if (parameter is null) return tool;
         // A megosztott SDK-eszközdefiníciót nem módosítjuk. A többi protokollmetaadat megmarad.
         var copy = JsonSerializer.Deserialize<Tool>(JsonSerializer.Serialize(tool, McpJsonUtilities.DefaultOptions), McpJsonUtilities.DefaultOptions)!;
         var schema = JsonNode.Parse(tool.InputSchema.GetRawText())!;
-        schema["properties"]![parameter] = JsonNode.Parse((parameter == "patch" ? Patch : ControlData).GetRawText());
+        schema["properties"]![parameter] = parameter == "wait_seconds"
+            ? JsonNode.Parse("""{"type":"integer","default":0,"minimum":0,"maximum":120,"description":"Jóváhagyáskérés után ennyi másodpercig várjon döntésre vagy eredményre, majd a döntés szerint folytassa. 0: azonnali állapot. A jóváhagyás nem végrehajtási siker: szükség esetén az eredményt is várja meg. Időtúllépés után státuszt kérdezzen újra, ne a műveletet ismételje."}""")
+            : JsonNode.Parse((parameter == "patch" ? Patch : ControlData).GetRawText());
         copy.InputSchema = JsonSerializer.SerializeToElement(schema);
         return copy;
     }

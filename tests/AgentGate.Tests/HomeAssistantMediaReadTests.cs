@@ -102,17 +102,21 @@ public sealed class HomeAssistantMediaReadTests
     public async Task BearerCanaryAndUnsafeUrlsRemainSanitized(string field)
     {
         using var fixture = CreateFixture("{}");
-        fixture.Handler.Respond = (request, _) =>
+        fixture.Handler.Respond = async (request, ct) =>
         {
+            if (request.RequestUri!.AbsolutePath == "/api/template")
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(HomeAssistantReadToolsTests.Handler.TemplatePayload(await request.Content!.ReadAsStringAsync(ct)))
+                };
             var attributes = new Dictionary<string, string> { [field] = fixture.Secrets.Token, ["media_content_id"] = "https://example.invalid/private" };
             var row = new { entity_id = "media_player.room", state = "playing", attributes };
             object payload = request.RequestUri!.AbsolutePath switch
             {
-                "/api/template" => Array.Empty<object>(),
                 "/api/states" => new[] { row },
                 _ => row
             };
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = System.Net.Http.Json.JsonContent.Create(payload) });
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = System.Net.Http.Json.JsonContent.Create(payload) };
         };
         foreach (var detail in new[] { false, true })
         {
@@ -173,9 +177,20 @@ public sealed class HomeAssistantMediaReadTests
         await Assert.ThrowsAsync<GateToolException>(() => unsafeState.Tools.GetState("media_player.room", CancellationToken.None));
         using var fixture = CreateFixture("{\"volume_level\":0.5}");
         var respond = fixture.Handler.Respond!;
-        fixture.Handler.Respond = (request, ct) => request.RequestUri!.AbsolutePath == "/api/template"
-            ? Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("[{\"area_id\":\"living\",\"area_name\":\"Nappali\",\"entities\":[\"media_player.room\"]}]") })
-            : respond(request, ct);
+        fixture.Handler.Respond = async (request, ct) =>
+        {
+            if (request.RequestUri!.AbsolutePath == "/api/template")
+            {
+                using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(ct));
+                // Csak a területsablon válaszát cseréljük; az eszközkapcsolat explicit null marad.
+                if (!body.RootElement.GetProperty("template").GetString()!.StartsWith("{% set entity_ids = ", StringComparison.Ordinal))
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("[{\"area_id\":\"living\",\"area_name\":\"Nappali\",\"entities\":[\"media_player.room\"]}]")
+                    };
+            }
+            return await respond(request, ct);
+        };
         var list = (await fixture.Tools.ListStates(CancellationToken.None, "media_player", "living")).StructuredContent!.Value;
         Assert.Equal(0.5, Assert.Single(list.GetProperty("items").EnumerateArray()).GetProperty("attributes").GetProperty("volume_level").GetDouble());
         Assert.Empty((await fixture.Tools.ListStates(CancellationToken.None, "media_player", "other")).StructuredContent!.Value.GetProperty("items").EnumerateArray());
@@ -204,11 +219,12 @@ public sealed class HomeAssistantMediaReadTests
     private static HomeAssistantReadToolsTests.Fixture CreateFixture(string attributes, string entity = "media_player.room", string[]? domains = null)
     {
         var fixture = new HomeAssistantReadToolsTests.Fixture("{}", domains ?? ["media_player", "sensor"]);
-        fixture.Handler.Respond = (request, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        fixture.Handler.Respond = async (request, ct) => new HttpResponseMessage(HttpStatusCode.OK)
         {
-            Content = request.RequestUri!.AbsolutePath == "/api/template" ? new StringContent("[]") :
+            Content = request.RequestUri!.AbsolutePath == "/api/template"
+                ? new StringContent(HomeAssistantReadToolsTests.Handler.TemplatePayload(await request.Content!.ReadAsStringAsync(ct))) :
                 new StringContent(request.RequestUri.AbsolutePath == "/api/states" ? $"[{Row()}]" : Row())
-        });
+        };
         return fixture;
 
         string Row() => JsonSerializer.Serialize(new { entity_id = entity, state = "playing", attributes = JsonSerializer.Deserialize<JsonElement>(attributes) });
@@ -219,6 +235,8 @@ public sealed class HomeAssistantMediaReadTests
         var result = detail ? await fixture.Tools.GetState(entity, CancellationToken.None) : await fixture.Tools.ListStates(CancellationToken.None);
         var data = result.StructuredContent!.Value;
         Assert.Equal(data.GetRawText(), Assert.IsType<ModelContextProtocol.Protocol.TextContentBlock>(Assert.Single(result.Content)).Text);
-        return detail ? data : Assert.Single(data.GetProperty("items").EnumerateArray());
+        var state = detail ? data : Assert.Single(data.GetProperty("items").EnumerateArray());
+        Assert.Equal(JsonValueKind.Null, state.GetProperty("device").ValueKind);
+        return state;
     }
 }

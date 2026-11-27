@@ -31,17 +31,20 @@ public sealed class HomeAssistantTools(IServiceProvider services)
         catch (HomeAssistantException) { throw new GateToolException("A Home Assistant lekérés sikertelen."); }
     }
 
-    [ToolAuditParameters("domain", "area")]
+    [ToolAuditParameters("domain", "area", "device_id")]
     [ToolRisk(RiskLevel.Read)]
     [McpServerTool(Name = "ha_list_states", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
-    [Description("Engedélyezett állapotok, legfeljebb 100 elem. Szűrés pontos domainnel és területnévvel vagy area_id értékkel.")]
-    public async Task<CallToolResult> ListStates(CancellationToken cancellationToken, string? domain = null, string? area = null)
+    [Description("Engedélyezett állapotok, legfeljebb 100 elem, eszközazonosítóval, névvel és az eszköz saját területével (device). Együttes, pontos szűrés: domain, entitásterület neve vagy area_id (area), eszközazonosító (device_id). A device null jelentése nincs eszköz; a device.area null jelentése nincs saját eszközterület. Ez nem ad registry-írási jogot.")]
+    public async Task<CallToolResult> ListStates(CancellationToken cancellationToken, string? domain = null, string? area = null,
+        string? device_id = null)
     {
         var client = Client;
         if (domain is not null && !client.IsDomainAllowed(domain))
             throw new GateToolException("Ez a domain nincs engedélyezve.");
         if (area is not null && (string.IsNullOrWhiteSpace(area) || area.Any(char.IsControl)))
             throw new GateToolException("A területszűrő érvénytelen.");
+        if (device_id is not null && !HomeAssistantClient.IsDeviceId(device_id))
+            throw new GateToolException("Az eszközszűrő érvénytelen.");
         var states = await Read(() => client.GetStatesAsync(cancellationToken));
         var areas = (await Read(() => client.GetAreasAsync(cancellationToken))).Where(HomeAssistantReadProjection.IsSafe).ToArray();
         var areaEntities = areas.Where(item => item.AreaId == area || item.AreaName == area)
@@ -50,6 +53,11 @@ public sealed class HomeAssistantTools(IServiceProvider services)
             .Where(state => area is null || areaEntities.Contains(state.EntityId))
             .OrderBy(state => state.EntityId, StringComparer.Ordinal).ToArray();
         var labels = new Dictionary<string, string[]>(StringComparer.Ordinal);
+        var devices = await Read(() => client.GetStateDevicesAsync((device_id is null ? filtered.Take(100) : filtered)
+            .Select(state => state.EntityId), cancellationToken));
+        if (device_id is not null)
+            filtered = filtered.Where(state => devices[state.EntityId].ValueKind == JsonValueKind.Object &&
+                devices[state.EntityId].GetProperty("device_id").GetString() == device_id).ToArray();
         if (services.GetService<RegistryPolicy>()?.IncludeEntityLabels == true)
             foreach (var state in filtered.Take(100)) labels[state.EntityId] = await Read(() => client.GetEntityLabelsAsync(state.EntityId, cancellationToken));
         return Result(new
@@ -57,6 +65,7 @@ public sealed class HomeAssistantTools(IServiceProvider services)
             items = filtered.Take(100).Select(state =>
             {
                 var item = HomeAssistantReadProjection.State(state);
+                item["device"] = devices[state.EntityId];
                 if (labels.TryGetValue(state.EntityId, out var assignedLabels)) item["labels"] = assignedLabels;
                 item["area_name"] = areas.FirstOrDefault(area => area.EntityIds.Contains(state.EntityId, StringComparer.Ordinal))?.AreaName;
                 return item;
@@ -95,7 +104,7 @@ public sealed class HomeAssistantTools(IServiceProvider services)
     [ToolAuditParameters("entity_id")]
     [ToolRisk(RiskLevel.Read)]
     [McpServerTool(Name = "ha_get_state", ReadOnly = true, Destructive = false, OpenWorld = false, UseStructuredContent = true)]
-    [Description("Egy engedélyezett entitás minimális, helyadatmentesen szűrt állapota.")]
+    [Description("Egy engedélyezett entitás minimális, helyadatmentesen szűrt állapota és eszköze (device: device_id, name, saját area). A név name_by_user, ennek hiányában name. Az entitás area_name mezője külön érték; eszköz hiányában device null, saját eszközterület hiányában device.area null. Nem ad registry-írási jogot.")]
     public async Task<CallToolResult> GetState(string entity_id, CancellationToken cancellationToken)
     {
         var client = Client;
@@ -107,6 +116,7 @@ public sealed class HomeAssistantTools(IServiceProvider services)
         var areas = (await Read(() => client.GetAreasAsync(cancellationToken))).Where(HomeAssistantReadProjection.IsSafe).ToArray();
         result["area_name"] = areas.FirstOrDefault(area => area.EntityIds.Contains(entity_id, StringComparer.Ordinal))?.AreaName;
         result["attributes"] = HomeAssistantReadProjection.Attributes(state);
+        result["device"] = (await Read(() => client.GetStateDevicesAsync([entity_id], cancellationToken)))[entity_id];
         if (services.GetService<RegistryPolicy>()?.IncludeEntityLabels == true)
             result["labels"] = await Read(() => client.GetEntityLabelsAsync(entity_id, cancellationToken));
         return Result(result);

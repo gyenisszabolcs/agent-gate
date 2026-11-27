@@ -17,5 +17,5 @@ public sealed record ApprovalNotice(Guid Id, string Caller, string Tool, RiskLev
     string Summary, DateTimeOffset ExpiresAt, ApprovalPresentation? Presentation = null);
 public sealed record ApprovalDecision(Guid Id, ApprovalChoice Choice, string Actor, DateTimeOffset DecidedAt);
 public enum ApprovalChoice { Approve, Reject }
-public enum ApprovalState { Pending, Executed, Rejected, Expired, Failed }
+public enum ApprovalState { Pending, Executed, Rejected, Expired, Failed, Approved }
 public sealed record ApprovalOutcome(Guid Id, ApprovalState State, string? Result);

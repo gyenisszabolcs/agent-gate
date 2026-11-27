@@ -35,10 +35,10 @@ public sealed class HomeAssistantReadToolsTests
         Assert.Equal(Enumerable.Range(0, Math.Min(count, 100)).Select(index => $"sensor.room_{index:D3}"), items.Select(item => item.GetProperty("entity_id").GetString()));
         foreach (var item in items)
         {
-            Assert.Equal(new[] { "area_name", "entity_id", "friendly_name", "last_changed", "state", "unit_of_measurement" }, item.EnumerateObject().Select(property => property.Name).Order());
+            Assert.Equal(new[] { "area_name", "device", "entity_id", "friendly_name", "last_changed", "state", "unit_of_measurement" }, item.EnumerateObject().Select(property => property.Name).Order());
             Assert.Equal("2026-11-14T10:20:30+00:00", item.GetProperty("last_changed").GetString());
         }
-        Assert.Equal(2, fixture.Handler.Calls);
+        Assert.Equal(count == 0 ? 2 : 3, fixture.Handler.Calls);
     }
 
     [Theory]
@@ -66,7 +66,7 @@ public sealed class HomeAssistantReadToolsTests
         await Assert.ThrowsAsync<GateToolException>(() => denied.Tools.ListStates(CancellationToken.None, "sensor"));
         using var allowed = new Fixture("[{\"entity_id\":\"sensor.room\",\"state\":\"on\",\"attributes\":{}}]");
         var single = (await Data(allowed.Tools.ListStates(CancellationToken.None))).GetProperty("items")[0];
-        Assert.Equal(new[] { "area_name", "entity_id", "state" }, single.EnumerateObject().Select(property => property.Name).Order());
+        Assert.Equal(new[] { "area_name", "device", "entity_id", "state" }, single.EnumerateObject().Select(property => property.Name).Order());
     }
 
     [Theory]
@@ -105,12 +105,12 @@ public sealed class HomeAssistantReadToolsTests
         var body = JsonSerializer.Serialize(new { entity_id = domain + ".room", state = "home", last_changed = "2026-11-14T10:20:30Z", attributes });
         using var fixture = new Fixture(body);
         var result = await Data(fixture.Tools.GetState(domain + ".room", CancellationToken.None));
-        Assert.Equal(new[] { "area_name", "attributes", "entity_id", "friendly_name", "last_changed", "state", "unit_of_measurement" }, result.EnumerateObject().Select(property => property.Name).Order());
+        Assert.Equal(new[] { "area_name", "attributes", "device", "entity_id", "friendly_name", "last_changed", "state", "unit_of_measurement" }, result.EnumerateObject().Select(property => property.Name).Order());
         Assert.Equal("home", result.GetProperty("state").GetString());
         Assert.Equal(new[] { "device_class", "friendly_name", "icon", "state_class", "unit_of_measurement" }, result.GetProperty("attributes").EnumerateObject().Select(property => property.Name).Order());
         Assert.Equal("mdi:home", result.GetProperty("attributes").GetProperty("icon").GetString());
         Assert.DoesNotContain("47.123", result.GetRawText());
-        Assert.Equal(2, fixture.Handler.Calls);
+        Assert.Equal(3, fixture.Handler.Calls);
     }
 
     [Theory]
@@ -357,13 +357,25 @@ public sealed class HomeAssistantReadToolsTests
     {
         public int Calls { get; private set; }
         public Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>? Respond { get; set; }
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        internal static string TemplatePayload(string body)
+        {
+            using var json = JsonDocument.Parse(body);
+            var template = json.RootElement.GetProperty("template").GetString()!;
+            const string prefix = "{% set entity_ids = ";
+            if (!template.StartsWith(prefix, StringComparison.Ordinal)) return "[]";
+            using var ids = JsonDocument.Parse(template[prefix.Length..template.IndexOf(" %}", StringComparison.Ordinal)]);
+            return JsonSerializer.Serialize(ids.RootElement.EnumerateArray().Select(id => new { entity_id = id.GetString(), device = (object?)null }));
+        }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Calls++;
-            return Respond?.Invoke(request, cancellationToken) ?? Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            if (Respond is not null) return await Respond(request, cancellationToken);
+            return new HttpResponseMessage(HttpStatusCode.OK)
             {
-                Content = new StringContent(request.RequestUri!.AbsolutePath == "/api/template" ? "[]" : body)
-            });
+                Content = new StringContent(request.RequestUri!.AbsolutePath == "/api/template"
+                    ? TemplatePayload(await request.Content!.ReadAsStringAsync(cancellationToken)) : body)
+            };
         }
     }
 }

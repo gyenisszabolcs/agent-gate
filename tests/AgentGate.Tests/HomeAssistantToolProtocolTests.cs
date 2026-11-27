@@ -34,7 +34,7 @@ public sealed class HomeAssistantToolProtocolTests
         var registered = Assert.Single(factory.Services.GetRequiredService<IOptions<McpServerOptions>>().Value.ToolCollection!,
             item => item.ProtocolTool.Name == name);
         Assert.Equal(RiskLevel.Read, Assert.Single(registered.Metadata.OfType<ToolRiskAttribute>()).Level);
-        Assert.Equal(name == "ha_list_states" ? ["domain", "area"] : parameter is null ? [] : new[] { parameter },
+        Assert.Equal(name == "ha_list_states" ? ["domain", "area", "device_id"] : parameter is null ? [] : new[] { parameter },
             Assert.Single(registered.Metadata.OfType<ToolAuditParametersAttribute>()).Names);
         using var call = await SendAsync(client, "tools/call", new { name, arguments = parameter == "entity_id" ? new Dictionary<string, string> { [parameter] = "sensor.room" } : new() });
         var result = call.RootElement.GetProperty("result");
@@ -67,7 +67,7 @@ public sealed class HomeAssistantToolProtocolTests
         var canary = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
         var logs = new Audit.McpAuditTests.RecordingLogger();
         using var handler = new HomeAssistantReadToolsTests.Handler("{}");
-        handler.Respond = (request, _) =>
+        handler.Respond = async (request, ct) =>
         {
             if (outcome == "http") throw new HttpRequestException(canary);
             var attributes = new Dictionary<string, object?>
@@ -82,7 +82,7 @@ public sealed class HomeAssistantToolProtocolTests
             object payload = request.RequestUri!.AbsolutePath switch
             {
                 "/api/states" => new[] { state },
-                "/api/template" => Array.Empty<object>(),
+                "/api/template" => JsonSerializer.Deserialize<JsonElement>(HomeAssistantReadToolsTests.Handler.TemplatePayload(await request.Content!.ReadAsStringAsync(ct))),
                 "/api/config" => new
                 {
                     version = "2026.11",
@@ -93,7 +93,7 @@ public sealed class HomeAssistantToolProtocolTests
                 },
                 _ => state
             };
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(payload) });
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(payload) };
         };
         if (outcome == "secret") secrets.Read = _ => throw new InvalidOperationException(canary);
         if (outcome == "timeout") secrets.Read = async ct => { await Task.Delay(Timeout.Infinite, ct); return secrets.Token; };
@@ -143,7 +143,7 @@ public sealed class HomeAssistantToolProtocolTests
         Assert.False(await reader.ReadAsync());
         Assert.False(logs.Contains(secrets.Token) || logs.Contains(canary), "Titok a strukturált naplóban.");
         Assert.False(call.RootElement.ToString().Contains(canary, StringComparison.Ordinal), "Provider-titok az MCP-válaszban.");
-        Assert.Equal(outcome is "secret" or "timeout" ? 0 : outcome == "success" && name != "ha_get_config" ? 2 : 1, handler.Calls);
+        Assert.Equal(outcome is "secret" or "timeout" ? 0 : outcome == "success" && name != "ha_get_config" ? 3 : 1, handler.Calls);
     }
 
     [Theory]

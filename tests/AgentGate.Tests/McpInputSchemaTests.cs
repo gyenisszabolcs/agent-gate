@@ -45,6 +45,7 @@ public sealed class McpInputSchemaTests
             {
                 "ha_update_registry" => "patch",
                 "ha_control" or "ha_sensitive_control" => "data",
+                "gate_approval_status" => "wait_seconds",
                 _ => null
             };
             if (parameter is not null)
