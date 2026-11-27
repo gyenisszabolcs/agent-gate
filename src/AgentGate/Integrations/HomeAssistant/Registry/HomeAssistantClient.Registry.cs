@@ -30,19 +30,24 @@ public sealed partial class HomeAssistantClient
     internal Task<JsonElement> ReadRegistryAreasAsync(CancellationToken ct) => RegistrySocket.CallAsync(logSockets, http.BaseAddress!, secrets, secretId, timeout,
         new Dictionary<string, object?> { ["id"] = 1, ["type"] = "config/area_registry/list" }, null, true, ct);
 
-    internal async Task<string?> ReadRegistryDeviceAreaAsync(string deviceId, CancellationToken ct)
+    internal async Task<(string? Area, string? Name)> ReadRegistryDeviceAsync(string deviceId, bool includePresentation, CancellationToken ct)
     {
         var source = await RegistrySocket.CallAsync(logSockets, http.BaseAddress!, secrets, secretId, timeout,
             new Dictionary<string, object?> { ["id"] = 1, ["type"] = "config/device_registry/list" }, null, true, ct);
-        // Csak az azonosító és a terület vetülete kell; a többi eszközadat nem jut tovább.
+        // A név csak megjelenítési vetület, nem része az előállapotnak vagy az engedélyezésnek.
         var areas = new Dictionary<string, string?>(StringComparer.Ordinal);
+        JsonElement selected = default;
         foreach (var item in RegistryPolicy.List(source))
         {
             var id = RegistryPolicy.RequiredId(item, "id");
             var area = item.GetProperty("area_id");
             if (!areas.TryAdd(id, area.ValueKind == JsonValueKind.Null ? null : RegistryPolicy.Id(area))) throw RegistryPolicy.Invalid();
+            if (id == deviceId) selected = item;
         }
-        return areas.TryGetValue(deviceId, out var result) ? result : throw RegistryPolicy.Invalid();
+        if (!areas.TryGetValue(deviceId, out var result)) throw RegistryPolicy.Invalid();
+        var name = includePresentation ? HomeAssistantRegistryService.DisplayText(selected, "name_by_user") : null;
+        if (includePresentation) name ??= HomeAssistantRegistryService.DisplayText(selected, "name");
+        return (result, name);
     }
 
     internal Task<JsonElement> ReadRegistryLabelsAsync(bool lossless, CancellationToken ct) => RegistrySocket.CallAsync(logSockets, http.BaseAddress!, secrets, secretId, timeout,

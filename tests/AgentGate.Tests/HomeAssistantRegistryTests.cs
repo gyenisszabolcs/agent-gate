@@ -109,7 +109,11 @@ public sealed class HomeAssistantRegistryTests
 
     internal sealed class Fixture : IDisposable
     {
-        public string Name { get; set; } = "Régi";
+        public string? Name { get; set; } = "Régi";
+        public string? OriginalName { get; set; }
+        public string? DeviceName { get; set; }
+        public string? DeviceNameByUser { get; set; }
+
         public string? Area { get; set; }
         public string? Device { get; set; }
         public string? DeviceArea { get; set; } = "bedroom";
@@ -122,6 +126,7 @@ public sealed class HomeAssistantRegistryTests
         public JsonElement LastUpdate { get; private set; }
         public Action? BeforeWrite { get; set; }
         public HomeAssistantLogTestSocketFactory Socket { get; }
+        public HomeAssistantReadToolsTests.Handler Http { get; }
         public HomeAssistantClient Client { get; }
         public HomeAssistantRegistryOperation Operation { get; }
         public RegistryPolicy Policy { get; }
@@ -133,7 +138,7 @@ public sealed class HomeAssistantRegistryTests
             {
                 RequestBody = command => command.GetProperty("type").GetString() switch
                 {
-                    "config/entity_registry/get" => JsonSerializer.Serialize(new { entity_id = "sensor.room", device_id = Device, area_id = Area, labels = new[] { "keep" }, name = Name, icon = (string?)null, hidden_by = (string?)null, disabled_by = DisabledBy }),
+                    "config/entity_registry/get" => JsonSerializer.Serialize(new { entity_id = "sensor.room", device_id = Device, area_id = Area, labels = new[] { "keep" }, name = Name, original_name = OriginalName, icon = (string?)null, hidden_by = (string?)null, disabled_by = DisabledBy }),
                     "config/device_registry/list" => Devices(),
                     "config/label_registry/list" => LabelsCatalog,
                     "config/area_registry/list" => AreasCatalog,
@@ -141,7 +146,8 @@ public sealed class HomeAssistantRegistryTests
                     _ => throw new InvalidOperationException("Váratlan websocket parancs.")
                 }
             };
-            Client = new(Options.Create(new HomeAssistantOptions { BaseUrl = "https://ha.example/", TokenSecretId = Guid.NewGuid().ToString(), DomainAllowlist = ["sensor"] }), Secrets, new HomeAssistantReadToolsTests.Handler(body), Socket);
+            Http = new(body);
+            Client = new(Options.Create(new HomeAssistantOptions { BaseUrl = "https://ha.example/", TokenSecretId = Guid.NewGuid().ToString(), DomainAllowlist = ["sensor"] }), Secrets, Http, Socket);
             var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["HomeAssistantRegistry:Enabled"] = "true",
@@ -152,8 +158,9 @@ public sealed class HomeAssistantRegistryTests
             Operation = new(new HomeAssistantRegistryService(Client, Policy, KillSwitch));
         }
         private string Updated(JsonElement command) { BeforeWrite?.Invoke(); LastUpdate = command.Clone(); Writes++; return "{}"; }
-        private string Devices() { DeviceReads++; return DevicesCatalog ?? JsonSerializer.Serialize(new[] { new { id = "device", area_id = DeviceArea } }); }
+        private string Devices() { DeviceReads++; return DevicesCatalog ?? JsonSerializer.Serialize(new[] { new { id = "device", area_id = DeviceArea, name = DeviceName, name_by_user = DeviceNameByUser } }); }
         public void Dispose() => Client.Dispose();
+
     }
 
     internal sealed class MutableKillSwitch : IKillSwitchStateSource

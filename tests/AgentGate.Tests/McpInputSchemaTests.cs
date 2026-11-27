@@ -94,6 +94,8 @@ public sealed class McpInputSchemaTests
         Assert.Contains("nincs rollback/retry", description);
         Assert.Contains("önálló create_label", description);
         Assert.Contains("patch.labels_add_created", description);
+        Assert.Contains("nem a létrehozások sorszáma", description);
+        Assert.Contains("[0], illetve [2]", description);
         Assert.Contains("validált HA-válasz-ID", description);
         var exampleStart = description.IndexOf("{\"entity_id\":\"light.yeelight_nappali\"", StringComparison.Ordinal);
         var exampleEnd = description.IndexOf("}}", exampleStart, StringComparison.Ordinal) + 2;
@@ -120,6 +122,7 @@ public sealed class McpInputSchemaTests
         Assert.Empty(createLabel.GetProperty("additionalProperties").GetProperty("not").EnumerateObject());
         var createdReferences = member.GetProperty("properties").GetProperty("patch").GetProperty("properties").GetProperty("labels_add_created");
         Assert.Equal("integer", createdReferences.GetProperty("items").GetProperty("type").GetString());
+        Assert.Contains("nem a létrehozások sorszáma", createdReferences.GetProperty("description").GetString());
         Assert.False(input.GetProperty("properties").GetProperty("patch").GetProperty("properties").TryGetProperty("labels_add_created", out _));
         var patch = input.GetProperty("properties").GetProperty("patch");
         Assert.Equal("object", patch.GetProperty("type").GetString());

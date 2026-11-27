@@ -60,7 +60,7 @@ public sealed partial class HomeAssistantApprovalChannelTests
     [InlineData("icon")]
     [InlineData("missing-label-name")]
     [InlineData("ambiguous-area")]
-    public async Task UnrepresentableRegistryChangeIsRejectedWithFixedSplitInstruction(string defect)
+    public async Task UnrepresentableRegistryChangeIsRejectedWithActualSafeReason(string defect)
     {
         using var f = new HomeAssistantRegistryTests.Fixture();
         var patch = "{\"name\":\"Új\"}";
@@ -80,7 +80,13 @@ public sealed partial class HomeAssistantApprovalChannelTests
         using var intent = JsonDocument.Parse(patch);
         using var reply = await CallMcpAsync(app, "ha_update_registry", new { entity_id = "sensor.room", patch = intent.RootElement });
         Assert.True(reply.RootElement.GetProperty("result").GetProperty("isError").GetBoolean());
-        Assert.Contains(ApprovalPresentation.SplitRequestMessage, reply.RootElement.GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString());
+        var expected = defect switch
+        {
+            "long-diff" => ApprovalPresentation.SplitRequestMessage,
+            "technical-name" => ApprovalPresentation.InvalidNameMessage,
+            _ => ApprovalPresentation.InvalidDisplayMessage
+        };
+        Assert.Contains(expected, reply.RootElement.GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString());
         Assert.Equal(0, app.Http.Count);
         Assert.Equal(0, f.Writes);
     }
@@ -141,13 +147,13 @@ public sealed partial class HomeAssistantApprovalChannelTests
         }
         var error = await Assert.ThrowsAsync<GateToolException>(async () =>
             await f.Operation.PrepareAsync(HomeAssistantRegistryTests.Arguments(patch), default));
-        Assert.Equal(ApprovalPresentation.SplitRequestMessage, error.Message);
+        Assert.Equal(ApprovalPresentation.InvalidDisplayMessage, error.Message);
         await using var app = new ChannelApp { RegistryFixture = f };
         using var client = app.CreateClient();
         using var intent = JsonDocument.Parse(patch);
         using var reply = await CallMcpAsync(app, "ha_update_registry", new { entity_id = "sensor.room", patch = intent.RootElement });
         Assert.True(reply.RootElement.GetProperty("result").GetProperty("isError").GetBoolean());
-        Assert.Equal(ApprovalPresentation.SplitRequestMessage, reply.RootElement.GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString());
+        Assert.Equal(ApprovalPresentation.InvalidDisplayMessage, reply.RootElement.GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString());
         Assert.Equal(0, app.Http.Count);
         Assert.Equal(0, f.Writes);
     }

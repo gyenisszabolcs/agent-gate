@@ -21,7 +21,7 @@ public sealed partial class HomeAssistantRegistryService(HomeAssistantClient? co
         policy.RequireEntity(client, entityId);
         var patch = RegistryPolicy.Patch(arguments["patch"]);
         var intent = JsonSerializer.SerializeToElement(new SortedDictionary<string, object?>(patch, StringComparer.Ordinal));
-        var before = await ReadSnapshotAsync(entityId, intent, ct);
+        var (before, targetName) = await ReadSnapshotAsync(entityId, intent, ct, includePresentation);
         var after = new SortedDictionary<string, object?>(before, StringComparer.Ordinal);
         var changes = new SortedDictionary<string, object?>(StringComparer.Ordinal);
         foreach (var (name, value) in patch.Where(pair => pair.Key is not ("labels_add" or "labels_remove")))
@@ -68,7 +68,7 @@ public sealed partial class HomeAssistantRegistryService(HomeAssistantClient? co
                     throw ApprovalPresentation.CannotDisplay();
                 display.Add(field, new(oldValue, newValue));
             }
-            presentation = new(before["name"] as string, display);
+            presentation = new(targetName ?? entityId, display, entityIdFallback: targetName is null ? entityId : null);
             _ = presentation.RegistryLine(extended: extended);
         }
         ct.ThrowIfCancellationRequested();
@@ -109,7 +109,7 @@ public sealed partial class HomeAssistantRegistryService(HomeAssistantClient? co
         {
             // Az írási kapcsolat hitelesítése UTÁN, a parancs kiküldése előtt újraolvasunk.
             // Ez szándékosan best-effort; a standard HA update nem nyújt atomi CAS-t.
-            var immediate = await ReadSnapshotAsync(entityId, patch.RootElement, token);
+            var (immediate, _) = await ReadSnapshotAsync(entityId, patch.RootElement, token);
             if (JsonSerializer.Serialize(immediate) != operation.Parameters["before"]) throw new RegistryPrestateChangedException();
             if (checkCatalog is not null) await checkCatalog(token);
             policy.RequireEntity(client, entityId);
@@ -146,13 +146,33 @@ public sealed partial class HomeAssistantRegistryService(HomeAssistantClient? co
         }
     }
 
-    private async Task<SortedDictionary<string, object?>> ReadSnapshotAsync(string entityId, JsonElement intent, CancellationToken ct)
+    private async Task<(SortedDictionary<string, object?> Snapshot, string? DisplayName)> ReadSnapshotAsync(
+        string entityId, JsonElement intent, CancellationToken ct, bool includePresentation = false)
     {
-        var snapshot = Snapshot(await client.ReadRegistryEntityAsync(entityId, intent, ct), entityId);
-        snapshot["device_area_id"] = snapshot["device_id"] is string deviceId ? await client.ReadRegistryDeviceAreaAsync(deviceId, ct) : null;
+        var source = await client.ReadRegistryEntityAsync(entityId, intent, ct);
+        var snapshot = Snapshot(source, entityId);
+        var device = snapshot["device_id"] is string deviceId
+            ? await client.ReadRegistryDeviceAsync(deviceId, includePresentation, ct) : default;
+        snapshot["device_area_id"] = device.Area;
         ResolveArea(snapshot);
-        return snapshot;
+        return (snapshot, includePresentation ? RegistryDisplayName(source, device.Name) : null);
     }
+
+    private static string? RegistryDisplayName(JsonElement source, string? deviceName)
+    {
+        // Az API original_name mezője már az unprefixed nevet tartalmazza, ha van.
+        // Nincs state-függőség: a disabled, állapot nélküli entitás is kezelhető.
+        var entityName = DisplayText(source, "name") ?? DisplayText(source, "original_name_unprefixed") ?? DisplayText(source, "original_name");
+        // Az érvényes másik komponens nem teheti elfogadhatóvá az érvénytelen nevet.
+        if (deviceName is not null) _ = ApprovalPresentation.RequireName(deviceName);
+        if (entityName is not null) _ = ApprovalPresentation.RequireName(entityName);
+        if (deviceName is null && entityName is null) return null;
+        return ApprovalPresentation.RequireName(deviceName is null ? entityName : entityName is null ? deviceName : $"{deviceName} {entityName}");
+    }
+
+    internal static string? DisplayText(JsonElement source, string key) =>
+        !source.TryGetProperty(key, out var value) || value.ValueKind == JsonValueKind.Null ? null :
+        value.ValueKind == JsonValueKind.String ? value.GetString() : throw new GateToolException(ApprovalPresentation.InvalidNameMessage);
 
     private static void ResolveArea(IDictionary<string, object?> snapshot)
     {
